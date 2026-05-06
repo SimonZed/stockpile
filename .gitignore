@@ -31,6 +31,15 @@ charts/
 output/
 *.html
 
+# Images
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.xcf
+*.gif
+*.svg
+
 # OS
 .DS_Store
 Thumbs.db

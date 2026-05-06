@@ -1,0 +1,236 @@
+"""Options scanner — find mispriced LEAPS to sell or buy.
+
+Modes:
+  (default)  show both calls and puts
+  --calls    calls only
+  --puts     puts only
+  --buy      reverse ranking to find underpriced options to buy
+  --roll     show net credit vs. closing an existing short position
+"""
+
+import argparse
+import logging
+import sys
+from datetime import date
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
+)
+log = logging.getLogger(__name__)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Scan option chain for mispriced premium."
+    )
+    parser.add_argument("ticker", metavar="TICKER")
+
+    side = parser.add_mutually_exclusive_group()
+    side.add_argument("--calls", action="store_true", help="Show calls only")
+    side.add_argument("--puts", action="store_true", help="Show puts only")
+
+    parser.add_argument(
+        "--buy",
+        action="store_true",
+        help="Buy mode: rank by lowest IV (underpriced) instead of highest",
+    )
+    parser.add_argument(
+        "--roll",
+        action="store_true",
+        help="Roll mode: display net credit vs. closing an existing position",
+    )
+    parser.add_argument(
+        "--type",
+        dest="roll_type",
+        choices=["call", "put"],
+        help="Option type of the position to roll (required with --roll)",
+    )
+    parser.add_argument(
+        "--strike",
+        dest="roll_strike",
+        type=float,
+        help="Strike of the position to roll (required with --roll)",
+    )
+    parser.add_argument(
+        "--expiration",
+        dest="roll_expiration",
+        metavar="YYYY-MM-DD",
+        help="Expiration of the position to roll (required with --roll)",
+    )
+    parser.add_argument(
+        "--min-dte",
+        type=int,
+        default=365,
+        help="Minimum days to expiration (default: 365)",
+    )
+    parser.add_argument(
+        "--max-dte",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum days to expiration (default: no limit)",
+    )
+    parser.add_argument(
+        "--min-oi",
+        type=int,
+        default=25,
+        help="Minimum open interest filter (default: 25)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Max rows to show in terminal (default: 10)",
+    )
+    parser.add_argument(
+        "--min-delta",
+        type=float,
+        default=0.10,
+        metavar="D",
+        help="Exclude options where abs(delta) < D (default: 0.10)",
+    )
+    parser.add_argument(
+        "--max-delta",
+        type=float,
+        default=0.50,
+        metavar="D",
+        help="Exclude options where abs(delta) > D (default: 0.50)",
+    )
+    parser.add_argument(
+        "--html",
+        action="store_true",
+        help="Also save an HTML report to --output-dir",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="Directory for HTML output (default: options-scanner/output/)",
+    )
+
+    args = parser.parse_args()
+    ticker = args.ticker.upper()
+
+    if args.roll and not (args.roll_type and args.roll_strike and args.roll_expiration):
+        parser.error("--roll requires --type, --strike, and --expiration")
+
+    if args.max_dte is not None and args.max_dte < args.min_dte:
+        parser.error("--max-dte must be >= --min-dte")
+
+    # Determine which side(s) to fetch
+    if args.calls or (args.roll and args.roll_type == "call"):
+        opt_type_fetch = "calls"
+        mode = "call"
+    elif args.puts or (args.roll and args.roll_type == "put"):
+        opt_type_fetch = "puts"
+        mode = "put"
+    else:
+        opt_type_fetch = "both"
+        mode = "both"
+
+    from chain import fetch_chain
+    from iv_surface import compute_iv_excess
+    from earnings import fetch_earnings_dates, annotate_earnings
+    from display import print_results
+    from stocks_shared.yahoo import fetch_option_chain
+
+    log.info(
+        "Fetching %s chain for %s (DTE %s)...",
+        opt_type_fetch,
+        ticker,
+        f"{args.min_dte}–{args.max_dte}" if args.max_dte else f">= {args.min_dte}",
+    )
+    try:
+        df = fetch_chain(
+            ticker,
+            opt_type=opt_type_fetch,
+            min_dte=args.min_dte,
+            max_dte=args.max_dte,
+        )
+    except ValueError as exc:
+        sys.exit(str(exc))
+
+    if df.empty:
+        sys.exit(
+            f"No options found for {ticker} in the specified DTE range. "
+            "Try adjusting --min-dte or --max-dte."
+        )
+
+    log.info(
+        "Found %d options across %d expirations. Fitting IV surface...",
+        len(df),
+        df["expiration"].nunique(),
+    )
+    df = compute_iv_excess(df)
+
+    log.info("Fetching earnings dates...")
+    earnings_dates = fetch_earnings_dates(ticker)
+    df = annotate_earnings(df, earnings_dates)
+
+    spot = float(df["spot"].iloc[0])
+
+    df = df[df["delta"].abs().between(args.min_delta, args.max_delta)]
+    if df.empty:
+        sys.exit(
+            f"No options remaining after delta filter "
+            f"(abs delta {args.min_delta:.2f}–{args.max_delta:.2f})"
+        )
+
+    # Roll: look up mid price of the position being closed
+    roll_close_cost: float | None = None
+    if args.roll:
+        log.info(
+            "Looking up close cost for %s %s $%.0f %s...",
+            ticker, args.roll_type, args.roll_strike, args.roll_expiration,
+        )
+        chain = fetch_option_chain(ticker, args.roll_expiration)
+        if chain is not None:
+            side_df = chain.calls if args.roll_type == "call" else chain.puts
+            row = side_df[side_df["strike"] == args.roll_strike]
+            if not row.empty:
+                bid = float(row["bid"].iloc[0] or 0)
+                ask = float(row["ask"].iloc[0] or 0)
+                last = float(row["lastPrice"].iloc[0] or 0)
+                roll_close_cost = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+                log.info("  Close cost (mid): $%.2f", roll_close_cost)
+            else:
+                log.warning("  Could not find current position in chain")
+        else:
+            log.warning("  Could not fetch chain for %s", args.roll_expiration)
+
+    print_results(
+        df,
+        ticker,
+        spot,
+        earnings_dates,
+        mode,
+        roll_close_cost=roll_close_cost,
+        min_oi=args.min_oi,
+        top_n=args.top,
+        buy=args.buy,
+    )
+
+    if args.html:
+        from report import save_html
+        action_tag = "buy" if args.buy else "sell"
+        type_tag = mode if mode != "both" else "both"
+        filename = f"{ticker}_{type_tag}_{action_tag}_{date.today().strftime('%Y%m%d')}.html"
+        output_dir = Path(args.output_dir) if args.output_dir else Path(__file__).parents[1] / "output"
+        output_path = output_dir / filename
+        save_html(
+            df,
+            ticker,
+            spot,
+            earnings_dates,
+            mode,
+            buy=args.buy,
+            roll_close_cost=roll_close_cost,
+            min_oi=args.min_oi,
+            output_path=output_path,
+        )
+        print(f"  HTML report: {output_path}")
+
+
+if __name__ == "__main__":
+    main()

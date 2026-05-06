@@ -1,0 +1,15 @@
+[project]
+name = "options-scanner"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "stocks-shared",
+    "numpy",
+    "lxml",
+    "streamlit",
+    "tabulate",
+    "yfinance",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
