@@ -12,6 +12,27 @@ built from brokerage transaction exports using Claude Code.
 - Chart: cumulative option premium collected over time
 - Chart: P&L over time
 
+## How to run
+
+Run from the **repo root** using `uv run`:
+
+```bash
+# All configured symbols
+uv run cost-basis-charts/run_charts.py
+
+# Single symbol only
+uv run cost-basis-charts/run_charts.py --symbol SCHW
+```
+
+HTML output (and optional PNG) is written to
+`cost-basis-charts/output/`. Configure accounts in
+`cost-basis-charts/config.toml` (copy from
+`cost-basis-charts/config.toml.example`).
+
+Never use `python` or `python3` directly — dependencies won't be
+available. Run `uv sync` from the repo root first if you haven't
+already.
+
 ## Data inputs
 
 - Brokerage transaction CSV — Schwab, Robinhood, Fidelity, or Merrill

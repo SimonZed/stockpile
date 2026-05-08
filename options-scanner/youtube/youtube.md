@@ -2,10 +2,14 @@
 
 ## Title Ideas
 
-- "Find Overpriced Options in 30 Seconds (Free Python Tool)"
-- "Stop Guessing Which Options to Sell — Use This"
+### keep this one
+- "Claude Code Finds Mis-Priced Options (Python)"
+
+- "I Built a Free Web App That Finds Mispriced Options"
+- "See Which Options Are Overpriced — In One Chart"
+- "Click Scan → See the Best Options to Sell (Free Tool)"
 - "The Options Screener Your Broker Doesn't Have"
-- "Scan Any Option Chain for Mispriced Premium with Python"
+- "Find Overpriced Options in 30 Seconds (Free, Any Ticker)"
 - "I Built an Options Scanner with Claude Code — Here's How to
   Use It"
 
@@ -13,94 +17,119 @@
 
 ## Thumbnail Ideas
 
-**Concept 1 — The Terminal IS the Thumbnail** *(recommended)*
-Background: the scanner output table — NVDA calls, IV+pp column
-color-coded, a few rows clearly highlighted in red/orange. Bold
-white text overlaid:
-- Large: FIND THE BEST OPTION TO SELL
-- Small: Free Python Tool — Any Ticker
+**Concept 1 — The Chart IS the Thumbnail** *(recommended)*
+Background: the volatility-surface scatter from the web app —
+dashed gray fitted curve, a cluster of red dots glowing well
+above it, a couple of blue dots below. Big white text overlaid:
+- Large: SELL THESE
+- Arrow pointing at the reddest dot
+- Small: Free Web App — Any Ticker
 
 **Concept 2 — Split Screen**
 Left: brokerage option chain — wall of undifferentiated numbers.
-Right: scanner output — 10 clean rows, one clearly glowing. Text:
+Right: the scanner chart — clean curve, one red dot clearly
+glowing above it. Text:
 - Which one? → THIS one.
 
 **Concept 3 — The Hook**
-Dark background, terminal on screen, big number in orange:
+Dark background, the chart on screen, big number floating next
+to a glowing red dot:
 - +7.2 pp
-- "That option is overpriced. Here's how to find them."
+- "That option is overpriced. Here's how to spot them."
 
 ---
 
 ## HOOK (0:00–1:15)
 
-*[SHOW TERMINAL — run the NVDA --calls scan live]*
+*[SHOW BROKERAGE OPTION CHAIN BRIEFLY — wall of numbers]*
 
-```
-uv run options-scanner/run_scanner.py NVDA --calls
-```
+If you sell options — covered calls, cash-secured puts — you've
+probably stared at an option chain like this and wondered
+which contract is actually the best one to sell.
 
-I typed one command. In about ten seconds it fetched NVDA's
-entire LEAPS option chain, fit a volatility surface to it, and
-ranked every call by how overpriced it is relative to its
-neighbors.
+Same goes for option buyers.
 
-*[SHOW OUTPUT TABLE — point to IV+pp column]*
+*[BACK TO STREAMLIT — type **ticker**, click Scan]*
 
-This column here — IV+pp — is doing all the work. It's telling
-you how many percentage points each option's implied volatility
-sits above where the model says it should be. Positive and
-climbing means the option is priced rich. The higher this number,
-the more premium you're collecting for a given amount of risk
-compared to the rest of the chain.
+I built a free tool with Claude Code in a couple nights
+that shows you the best ones, and visualizes it in a chart.
 
-*[POINT TO TOP ROW]*
+Let me demonstrate:
+[Type a ticker. Click Scan. Wait...]
 
-So right now, this $[STRIKE] call expiring [DATE] has the most
-excess premium of anything on the NVDA chain. Everything you
-need to decide whether to sell it is right here — the strike,
-expiration, bid-ask, delta, annualized yield, open interest.
+*[SHOW THE VOLATILITY SURFACE CHART — dots and dashed curve]*
 
-I'm going to spend this video showing you how this works, what
-the output actually means, and how to set it up and run it for
-your own positions. This is only scratching the surface — there's
-a portfolio scan, a roll mode, a full web UI, and more. Let's get
-into it.
+This is every long-dated call on NVDA right now. Each dot is one
+option. The dashed line is what the rest of the chain says each
+strike's implied volatility *should* be — it's a fitted
+volatility surface.
+
+*[POINT TO RED DOTS ABOVE THE LINE]*
+
+The red dots are sitting above the line. That means the market
+is pricing those options richer than their neighbors. More
+premium for the same amount of risk. Those are the calls you
+want to sell.
+
+*[POINT TO BLUE DOTS BELOW]*
+
+Blue dots are the opposite — cheap for what they are. If you're
+buying calls, you'd look at those.
+
+*[HOVER OVER A RED DOT — tooltip shows strike, IV+pp, delta]*
+
+Hover any dot and you get the strike, the expiration, how many
+percentage points it sits above the surface, the delta, and the
+open interest. Everything you need to decide whether to sell it.
+
+I'm going to spend this video showing you how the chart works,
+what to actually do with it, and how to run it on your own
+positions in about five minutes of setup. There's a portfolio
+scanner, a rolling-position mode, and more. Let's get into it.
 
 ---
 
-## WHAT THE TOOL IS DOING (1:15–2:45)
+## WHAT THE TOOL IS DOING (1:15–2:30)
 
-*[SWITCH TO DIAGRAM OR SIMPLE SLIDE]*
+*[SHOW THE CHART AGAIN — annotate as you talk]*
 
-The core idea is this: a stock's option chain should form a
-smooth surface. If you plot implied volatility against strike
-price and time to expiration, the shape should be consistent —
-higher IV for farther out-of-the-money strikes, smooth
-transitions between expirations. Market makers keep it that way.
+Quick framing on what you're looking at, because the chart is
+doing most of the work.
 
-When an option's IV sits noticeably above the fitted surface,
-something made it more expensive than its neighbors — a stale
-quote, a thin market, event risk that isn't evenly distributed,
-or just an inefficiency. That's the option you want to sell.
+A stock's option chain should form a smooth surface. Plot
+implied volatility against strike, and it traces a shape — the
+volatility smile. Higher IV for far out-of-the-money strikes,
+smooth transitions between expirations. Market makers keep it
+that way.
 
-*[RETURN TO TERMINAL OUTPUT]*
+The dashed line in the chart is that smooth shape, fit to the
+chain. When an option's actual IV sits noticeably above the
+line, something made it more expensive than its neighbors — a
+stale quote, a thin market, event risk that isn't evenly
+distributed, or just an inefficiency. That's the option you
+want to sell.
 
-The IV+pp column is the gap between each option's actual IV and
-what the surface fit predicts. Small values — under three
-percentage points — mean the chain is uniformly priced and the
-ranking is mostly noise. Values of five or more are a genuine
-signal.
+*[POINT TO COLOR LEGEND]*
 
-Two more things in the output worth knowing before we dive in.
+The color tells you the gap, in percentage points, between the
+actual IV and the fitted surface. We call it IV-plus-pp. Small
+gaps — under three percentage points — mean the chain is
+uniformly priced and the ranking is mostly noise. Five or more
+points above the line is a genuine signal.
+
+*[SCROLL DOWN TO THE TABLE]*
+
+Below the chart, the same options appear ranked in a table.
+Same data, different format. The IV+pp column matches the dot
+colors. Two more things in the table worth knowing.
 
 *[POINT TO DELTA COLUMN]*
 
 Delta is your approximate probability of being assigned at
-expiration. A delta of 0.30 means roughly a thirty percent chance
-the stock closes above your strike. Lower delta means you keep
-the stock more often — you give up some premium to get that
-safety margin.
+expiration. A delta of 0.30 means roughly a thirty percent
+chance the stock closes above your strike. Lower delta means
+you keep the stock more often — you give up some premium to
+get that safety margin.
 
 *[POINT TO ANN% COLUMN]*
 
@@ -110,18 +139,56 @@ relative to the strike, which is the capital you'd be putting
 at risk. This lets you compare options across different
 expirations on the same footing.
 
-*[POINT TO HEADER — LT CLOSE DATE]*
+*[POINT TO LT CLOSE METRIC AT TOP]*
 
-And up here — LT close date. If you open a short position today
-and hold it for three hundred and sixty-six days before closing,
+And up here — LT Close. If you open a short position today and
+hold it for three hundred and sixty-six days before closing,
 the premium is taxed at the long-term capital gains rate. This
 tells you the earliest you could close for that treatment.
 
 ---
 
-## SELLING COVERED CALLS — THE MAIN USE CASE (2:45–5:00)
+## A QUICK ASIDE: PERCENTAGE POINTS VS. PERCENT (2:30–3:15)
 
-*[SHOW TERMINAL — same NVDA output]*
+*[OPTIONAL: SIMPLE TEXT SLIDE WITH THE EXAMPLE NUMBERS]*
+
+This is wonky but an important concept to understand when using
+this tool. The IV+pp column you keep seeing — pp stands for
+**percentage points**, and that is deliberately different from
+percent. They are not the same thing.
+
+Here is why it matters. Implied volatility itself is already a
+percentage — forty-five percent, fifty percent, and so on. So
+when you talk about the gap between two of those numbers, you
+have to be careful. Going from forty-five percent to
+forty-eight-and-a-half percent is plus three-and-a-half
+**percentage points**. Calling that plus three-and-a-half
+**percent** would be wrong — the relative percent change there
+is more like plus seven-point-eight percent.
+
+*[SHOW THE NUMBERS ON SCREEN: 45% → 48.5% = +3.5 pp ≠ +7.8%]*
+
+Two practical takeaways from that.
+
+**One.** When you read a plus-five-pp signal in the table or
+see a red dot floating five units above the fitted curve,
+that's an absolute IV gap. Same unit on every strike and every
+expiration, which is what makes the ranking comparable across
+the whole chain.
+
+**Two.** Do not confuse IV+pp with a return. A plus-five-pp
+option is not paying you five percent. The Ann% column on the
+table is your actual annualized yield on the premium — that's
+where you check the real return on capital.
+
+So: pp is the language of volatility differences. Once you've
+got that distinction, the rest of the tool falls into place.
+
+---
+
+## SELLING COVERED CALLS — THE MAIN USE CASE (3:15–5:15)
+
+*[SHOW STREAMLIT — Single Ticker tab, NVDA loaded]*
 
 Let's say you own NVDA shares and you want to sell a covered
 call. You want LEAPS — options a year or more out — so the
@@ -129,51 +196,51 @@ premium qualifies for long-term capital gains when you close.
 You also want the call to be genuinely overpriced, not just any
 call.
 
-*[POINT TO IV+pp COLUMN — HIGHLIGHT TOP ROWS]*
+*[POINT TO THE CHART — RED DOTS]*
 
-These top rows are ranked exactly for that. The default filter
-is delta between 0.10 and 0.50 — real candidates, not deep in
-the money or lottery tickets. And minimum open interest of
-twenty-five, so you're not staring at options nobody is trading.
+The chart shows you the candidates at a glance. Anything red
+above the curve is a sell candidate. The redder the dot, the
+richer the premium relative to its neighbors.
 
-*[ADD --delta-min --delta-max flags to command]*
+*[POINT TO DELTA SLIDER]*
 
-You can narrow the delta range. A lot of covered call sellers
-like the 0.25 to 0.40 range — enough premium to be worthwhile,
-enough strike distance to not get called away every time the
-stock moves.
+Up top there's a delta range slider. Default is 0.10 to 0.50 —
+real candidates, not deep in the money or lottery tickets. A
+lot of covered call sellers narrow this to 0.25 to 0.40 —
+enough premium to be worthwhile, enough strike distance to not
+get called away every time the stock moves.
 
-```
-uv run options-scanner/run_scanner.py NVDA --calls \
-    --delta-min 0.25 --delta-max 0.40
-```
+*[DRAG SLIDER TO 0.25–0.40, CLICK SCAN]*
 
-*[SHOW FILTERED OUTPUT]*
+*[SHOW UPDATED CHART AND TABLE]*
 
-Now you're looking at a much tighter slice — real candidates for
-a covered call that won't keep you up at night.
+Now you're looking at a tighter slice — real candidates for a
+covered call that won't keep you up at night.
 
-*[POINT TO EXPIRATION COLUMN — EARNINGS TAG]*
+*[POINT TO EXPIRATION SELECTBOX ABOVE THE CHART]*
 
-See the 2E here? That means two earnings events fall before this
-expiration. IV tends to spike around earnings — that's the market
-pricing in uncertainty, not a free lunch. Worth knowing before
-you commit.
+Each expiration has its own volatility smile, so the chart shows
+one at a time. Use this dropdown to switch between them — you'll
+see the surface shape change, and which strikes are rich shifts
+with it.
 
-*[SHOW --html FLAG]*
+*[POINT TO EXPIRATION COLUMN IN TABLE — EARNINGS TAG]*
 
-Add --html and it saves a report you can open in any browser.
-The table is sortable — click any column to re-rank. The IV+pp
-column is color-coded: deeper red means more overpriced.
+See the 2E next to one of these expirations? That means two
+earnings events fall before this expiration. IV tends to spike
+around earnings — that's the market pricing in uncertainty, not
+a free lunch. Worth knowing before you commit.
 
-```
-uv run options-scanner/run_scanner.py NVDA --calls --html
-```
+*[CLICK "DOWNLOAD HTML REPORT" BUTTON]*
 
-*[OPEN BROWSER — SHOW HTML REPORT]*
+If you want to save a report — to share with someone, or come
+back to it later — there's a download button. The HTML version
+has the same data, sortable by any column. Click to re-rank.
 
-You can share this with someone, save it for your records, come
-back to it later. It writes to the options-scanner/output folder.
+*[OPEN THE DOWNLOADED HTML REPORT]*
+
+That's all the same data, in a single file you can email
+yourself or check tomorrow.
 
 **One honest caveat about the data source.** Everything here
 comes from Yahoo Finance, which is free and requires no account.
@@ -192,7 +259,9 @@ None of this breaks the tool — it still surfaces real
 patterns — but you should treat the output as a starting
 point for further research, not a trading signal on its own.
 Always verify the bid-ask spread before acting on anything
-the scanner surfaces.
+the scanner surfaces. Stale IV also tends to show up as a
+single dot far from its neighbors with no obvious reason — if
+something looks too good to be true on the chart, it usually is.
 
 A natural future enhancement would be plugging in a better
 data source. Schwab has a developer API — free for account
@@ -203,147 +272,114 @@ especially for the IV surface fitting. It's on the roadmap.
 
 ---
 
-## MORE FEATURES (5:00–7:15)
+## MORE FEATURES (5:15–7:15)
 
-*[SHOW TERMINAL]*
+*[SHOW STREAMLIT — Single Ticker tab]*
 
-That's the core use case, but there's more here.
+That's the core use case, but there's more here, and it's all
+on the same form.
 
-**Selling puts.** Same idea — swap --calls for --puts. The tool
-shows put candidates ranked by IV excess. For puts, Ann% is
-calculated relative to the strike price, not the stock price,
-because that's the capital you'd be committing if assigned.
+**Selling puts.** Flip the Option Type radio from Calls to Puts
+and click Scan. Same chart, same ranking, but now you're looking
+at the put side of the chain. For puts, Ann% is calculated
+relative to the strike price, not the stock price, because
+that's the capital you'd be committing if assigned.
 
-```
-uv run options-scanner/run_scanner.py NVDA --puts
-```
+*[CLICK "PUTS", SCAN, SHOW CHART]*
 
-*[SHOW OUTPUT]*
+**Rolling an existing position.** You have a call expiring in a
+few months and want to roll it out. Check the "Rolling an
+existing position?" box.
 
-**Rolling an existing position.** You have a call on expiring
-in a few months and want to roll it out. Pass --roll with your
-current position's details and a NetCr column appears — the
+*[CHECK THE ROLL BOX — FIELDS APPEAR]*
+
+Fields appear for your current strike and expiration. Fill them
+in, scan, and a Net Credit column appears in the table — the
 net credit you'd receive after paying to close the old position.
 Positive means you'd collect cash on the roll. Negative is a
 debit.
 
-```
-uv run options-scanner/run_scanner.py NVDA --roll \
-    --type call --strike 145 --expiration 2026-03-20
-```
+*[FILL IN ROLL FIELDS, SCAN, POINT TO NetCr COLUMN]*
 
-*[SHOW ROLL OUTPUT — POINT TO NetCr COLUMN]*
+The candidates are still ranked by IV excess, so the top row is
+the new contract where you'd collect the most excess premium —
+not just the most raw premium.
 
-These are ranked by IV excess, so the top row is the new
-contract where you'd collect the most excess premium, not just
-the most raw premium.
+**Short-dated options.** The default is LEAPS — one year or
+more. But you can change the Min and Max DTE inputs to look at
+shorter expirations. Useful if you're scanning for near-term
+premium or want to see the full picture across timeframes.
 
-**Short-dated options.** The default is one year or more — LEAPS.
-But add --max-dte to look at shorter expirations. This is useful
-if you're scanning for near-term premium, or if you want to see
-the full picture across timeframes.
+*[CHANGE MIN DTE TO 30, MAX DTE TO 90, SCAN]*
 
-```
-uv run options-scanner/run_scanner.py NVDA --calls \
-    --min-dte 30 --max-dte 90
-```
+**Buy mode.** Flip the Action radio from Sell to Buy. Same
+surface fit, but now the ranking inverts — you're looking for
+the most underpriced options, the dots farthest *below* the
+curve. The chart's blue dots are now the candidates.
 
-**Buy mode.** Flip the ranking for finding underpriced options —
-if you want to buy calls or puts rather than sell them. The same
-surface fit, but now you want negative IV excess. Most negative
-at the top.
-
-```
-uv run options-scanner/run_scanner.py NVDA --calls --buy
-```
+*[CLICK BUY MODE, SHOW CHART WITH BLUE DOTS HIGHLIGHTED]*
 
 ---
 
 ## PORTFOLIO SCAN (7:15–8:30)
 
-*[SHOW TERMINAL]*
-
-Here's my favorite feature if you have more than one or two
-positions. You export your full transaction history from your
-brokerage — Schwab, Robinhood, Fidelity, or Merrill — and point
-the portfolio scanner at it.
-
-```
-uv run options-scanner/run_portfolio.py \
-    --csv input/schwab028.csv --html
-```
-
-*[SHOW TERMINAL OUTPUT — MULTIPLE TICKERS SCROLLING]*
-
-It reads the CSV, figures out every ticker where you currently
-hold shares, detects which ones already have a covered call open
-against them, and scans each position automatically.
-
-*[SHOW HTML PORTFOLIO REPORT — SUMMARY TABLE AT TOP]*
-
-The HTML report has a summary table up top — every position,
-whether it's covered or uncovered, the current spot price.
-Then scroll down for each ticker's section.
-
-*[SCROLL TO UNCOVERED POSITION SECTION]*
-
-For uncovered positions — shares with no call against them —
-it shows the best calls to sell, same as running the single
-ticker scanner manually.
-
-*[SCROLL TO COVERED POSITION SECTION]*
-
-For covered positions, it shows the roll candidates. See the
-NetCr column here — this is telling you what you'd collect
-net if you closed your existing call and opened each of
-these instead.
-
-Instead of opening the tool once per ticker, you run one command
-and get a full report across your whole account.
-
----
-
-## THE WEB UI (8:30–9:15)
-
-*[SHOW BROWSER — STREAMLIT APP]*
-
-If you'd rather not touch the terminal at all, there's a web
-interface. One command starts a local web server and opens it
-in your browser.
-
-```
-uv run streamlit run options-scanner/run_app.py
-```
-
-*[SHOW SINGLE TICKER TAB — FILL IN NVDA, HIT SCAN]*
-
-You type the ticker, pick Calls or Puts, set your delta range
-with a slider, hit Scan. Results appear as an interactive table
-you can sort by clicking any column.
-
-*[CLICK "ROLLING AN EXISTING POSITION?" CHECKBOX]*
-
-Check this box if you're rolling. Fields appear for your current
-strike and expiration — it looks up the close cost automatically
-and shows you the NetCr column.
-
-*[CLICK DOWNLOAD HTML BUTTON]*
-
-This download button generates the HTML report right in your
-browser — no file saved on disk unless you want it.
-
 *[SWITCH TO PORTFOLIO TAB]*
 
-The Portfolio tab is drag-and-drop. Upload your brokerage CSV,
-pick your brokerage, hit Scan Portfolio. Progress bar while it
-fetches each ticker. Results come back in expandable sections,
-one per position. Download the full report with one click.
+Here's my favorite feature if you have more than one or two
+positions. Drop in your brokerage CSV — Schwab, Robinhood,
+Fidelity, or Merrill — and the tool scans every position you own.
 
-No Python knowledge required to use this once it's set up.
+*[DRAG-AND-DROP A REDACTED CSV INTO THE UPLOADER]*
+
+Pick the brokerage, click Scan Portfolio. There's a progress
+bar while it fetches each ticker.
+
+*[SHOW PROGRESS BAR FILLING IN]*
+
+It figures out every ticker where you currently hold shares,
+detects which ones already have a covered call open against
+them, and scans each position automatically.
+
+*[SHOW EXPANDABLE SECTIONS — ONE PER TICKER]*
+
+Each position is its own expandable section. For uncovered
+positions — shares with no call against them — it shows the
+best calls to sell. For covered positions, it shows the roll
+candidates with a Net Credit column — what you'd collect net
+if you closed your existing call and opened each of these
+instead.
+
+*[CLICK "DOWNLOAD PORTFOLIO REPORT"]*
+
+One download button gives you an HTML report covering your
+whole account — summary table up top, every ticker's
+candidates below.
+
+Instead of scanning ticker by ticker, you upload one CSV and
+get a full report.
 
 ---
 
-## HOW I BUILT THIS — AND HOW LONG IT TOOK (9:15–10:45)
+## A QUICK NOTE ON THE TERMINAL (8:30–9:00)
+
+*[BRIEFLY SHOW TERMINAL — `uv run options-scanner/run_scanner.py NVDA --calls`]*
+
+If you prefer the command line — or you want to script this
+into a cron job, pipe the output, automate around it — there's
+a CLI version that does everything the web UI does. Same data,
+same ranking, just text output instead of a chart.
+
+```
+uv run options-scanner/run_scanner.py NVDA --calls
+```
+
+The README has the full flag reference. If you don't want to
+touch the terminal, you don't have to — the web UI is the
+recommended way to use this.
+
+---
+
+## HOW I BUILT THIS — AND HOW LONG IT TOOK (9:00–10:30)
 
 *[SHOW CLAUDE CODE TERMINAL OR SIDE-BY-SIDE: CHAT ON LEFT,
 CODE ON RIGHT]*
@@ -441,7 +477,7 @@ can read it, fork it, change it, or just use it as-is.
 
 ---
 
-## WHAT YOU NEED — SETUP (10:45–12:15)
+## WHAT YOU NEED — SETUP (10:30–12:00)
 
 *[SHOW GITHUB REPO]*
 
@@ -504,25 +540,29 @@ uv sync
 This installs everything — yfinance, numpy, streamlit, tabulate,
 all of it. Takes about thirty seconds the first time.
 
-*[SHOW TERMINAL — RUN THE SCANNER]*
+*[SHOW TERMINAL — RUN THE WEB UI COMMAND]*
 
-**Step 5 — Run it.**
+**Step 5 — Start the web app.**
 
-Single ticker, from the stockpile folder:
-
-```
-uv run options-scanner/run_scanner.py NVDA --calls
-```
-
-Or start the web UI:
+From the stockpile folder, one command:
 
 ```
 uv run streamlit run options-scanner/run_app.py
 ```
 
-Or scan your portfolio — export your transaction history from
-your brokerage, drop it in the input folder, and point the
-scanner at it:
+That opens the app in your browser at localhost:8501. From here
+on, you don't need the terminal — type a ticker, hit Scan.
+
+*[SHOW BROWSER OPENING TO STREAMLIT]*
+
+If you'd rather use the command-line scanner directly:
+
+```
+uv run options-scanner/run_scanner.py NVDA --calls
+```
+
+Or scan your portfolio from the CLI — export your transaction
+history from your brokerage, drop it in the input folder:
 
 ```
 uv run options-scanner/run_portfolio.py \
@@ -539,15 +579,16 @@ your machine. It never leaves. No Anthropic server sees it.
 
 ---
 
-## OUTRO (12:15–12:45)
+## OUTRO (12:00–12:30)
 
-*[ON CAMERA OR TERMINAL]*
+*[ON CAMERA OR BROWSER]*
 
-That's the options scanner. Find LEAPS calls and puts ranked by
-how overpriced the premium is. Roll an existing position for
-maximum net credit. Scan your whole portfolio at once from a
-brokerage export. Use the web UI if you don't want to touch
-the terminal.
+That's the options scanner. A free web app that finds LEAPS
+calls and puts ranked by how overpriced the premium is, shown
+on a chart so you can see at a glance which strikes are rich.
+Roll an existing position for maximum net credit. Scan your
+whole portfolio at once from a brokerage export. CLI also
+available if you want it.
 
 Link to the repo is in the description. If you hit a snag
 setting it up, drop a comment — I check them.
@@ -566,16 +607,20 @@ here.
 
 ## DESCRIPTION
 
-Free Python Options Scanner — Find Overpriced Calls and Puts
+Free Options Scanner Web App — Find Overpriced Calls and Puts
 to Sell
 
-I built an open-source option chain scanner with Claude Code
-that ranks every LEAPS call or put by how overpriced it is
-relative to a fitted volatility surface. Useful for selling
-covered calls, cash-secured puts, and rolling existing
-positions.
+I built an open-source option chain scanner with Claude Code.
+It's a free web app that ranks every LEAPS call or put by how
+overpriced it is relative to a fitted volatility surface, and
+shows the result on a chart so you can see the rich strikes at
+a glance. Useful for selling covered calls, cash-secured puts,
+and rolling existing positions.
 
 **What it does:**
+- Browser-based UI — no terminal required to use it
+- Volatility-surface chart: every option as a dot, fitted curve
+  overlaid, red dots = overpriced, blue dots = underpriced
 - Fetches the full option chain from Yahoo Finance (free,
   no API key)
 - Fits a 2-D volatility surface to find options priced above
@@ -584,9 +629,9 @@ positions.
   implied volatility
 - Filters by delta, open interest, and days to expiration
 - Roll mode: shows net credit for rolling an existing position
-- Portfolio scan: reads your brokerage CSV and scans every
-  open position automatically
-- Web UI: browser-based interface, no terminal required
+- Portfolio scan: drag-and-drop your brokerage CSV and scan
+  every open position automatically
+- CLI also available for scripting and automation
 
 **What you need:**
 - Python 3.12+
@@ -595,14 +640,15 @@ positions.
 - Optional: a brokerage CSV export for the portfolio scan
 
 **Steps covered:**
-0:00 Hook — scanning NVDA live
-1:15 How the IV surface works
-2:45 Selling covered calls — the main use case
-5:00 More features: puts, rolling, buy mode, short-dated
-7:15 Portfolio scan — one command for all your positions
-8:30 Web UI — no terminal needed
-9:15 How I built it — 22 prompts, 2 evenings, ~1900 lines
-10:45 Setup — Python, uv, cloning the repo, running it
+0:00 Hook — scanning NVDA in the web app
+1:15 How the volatility surface chart works
+2:30 Why pp, not % — a wonky but important detail
+3:15 Selling covered calls — the main use case
+5:15 More features: puts, rolling, buy mode, short-dated
+7:15 Portfolio scan — drag in your brokerage CSV
+8:30 CLI mode for scripting and power users
+9:00 How I built it — 22 prompts, 2 evenings, ~1900 lines
+10:30 Setup — Python, uv, cloning the repo, running it
 
 **Links:**
 GitHub repo: https://github.com/medloh/stockpile
@@ -630,31 +676,38 @@ If you hit a snag, drop a comment — I check them.
   `git add options-scanner && git commit -m "Add options-scanner tool"`
   Then use `git log --oneline` and `git diff HEAD~1 --stat` to
   show the scope of what was added in one commit.
-- Do a live run of NVDA --calls right before recording so the
-  output is fresh and realistic — pick a day when IV is
-  elevated if possible (earnings week, market volatility)
-- If NVDA's IV+pp spread is flat (all under 2pp like AMD was),
-  either use a different ticker for the hook or acknowledge it
-  — "right now NVDA's chain is uniformly priced, which itself
-  is useful information"
-- Pre-generate the HTML report so you can cut straight to the
-  browser without waiting
+- **Have the Streamlit app running before you hit record.** The
+  hook depends on it being up the moment you switch to the
+  browser. Startup takes 3–4 seconds — don't make viewers wait.
+- **Pick a ticker with a visible spread on the chart.** The
+  whole hook fails if every dot is sitting on the curve. Before
+  recording, scan NVDA, AAPL, TSLA, and 2–3 others — pick the
+  one with the most clearly red/blue dots away from the line.
+  A volatile day or a day before earnings helps.
+- If no ticker has a strong spread that day, acknowledge it on
+  camera — "today's chains are uniformly priced, which itself
+  is useful information; here's what it looks like when there
+  IS a signal" — then show a screenshot from a previous day.
+- For the chart hook, zoom the browser to ~125% so the dots
+  read clearly on a phone screen.
+- Pre-generate the HTML report so you can cut straight to it
+  without waiting for the download.
 - Have a real brokerage CSV ready for the portfolio scan demo
-  — redact or blur any sensitive position sizes if needed
-- Have the Streamlit app already running before recording that
-  section — startup takes 3-4 seconds
+  — redact or blur any sensitive position sizes if needed.
 - For the "how I built this" section, decide whether to show
   the actual Claude Code conversation transcript scrolling, or
   just read the prompt summary bullets on screen. The transcript
   is more compelling but harder to read on camera.
 
 ### Sections that need strong pacing
-- Hook: keep it under 75 seconds — the output is visual and
-  speaks for itself, don't over-narrate
+- Hook: keep it under 75 seconds — the chart speaks for itself,
+  don't over-narrate. The reveal moment is the chart appearing
+  with red dots above the curve; let it land.
 - Setup section: this will be the hardest for non-technical
   viewers — go slowly, show every keystroke, mention that
   the README has written instructions they can follow at
-  their own pace
+  their own pace. The payoff is the web app opening — make
+  sure that moment is on screen.
 
 ### Before Publishing
 - Add chapters (timestamps in description)

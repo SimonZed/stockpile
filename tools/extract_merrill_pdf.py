@@ -1,6 +1,6 @@
 """Extract Merrill Edge IRA PDF statements and write to Merrill CSV format.
 
-Reads merrill2023.pdf (all of 2023) and merrill2024.pdf (all of 2024),
+Reads merrill2023.one_off (all of 2023) and merrill2024.one_off (all of 2024),
 extracts transactions before the existing CSV cutoff (2024-05-06), and
 writes input/merrill_2023_2024_missing.csv in Merrill CSV format.
 """
@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 import pdfplumber
 
-INPUT_PDFS = ["input/merrill2023.pdf", "input/merrill2024.pdf"]
+INPUT_PDFS = ["input/merrill2023.one_off", "input/merrill2024.one_off"]
 OUTPUT = Path("input/merrill_2023_2024_missing.csv")
 CSV_CUTOFF = date(2024, 5, 6)   # first date in existing CSV — exclude this and later
 ACCOUNT = "IRA-Edge 6B1-50X02"

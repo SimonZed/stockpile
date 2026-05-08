@@ -10,10 +10,34 @@ charts, and shared parsing/finance utilities.
   FIFO analysis, Black-Scholes pricing
 - **tools** — one-off migration scripts: Schwab→Robinhood CSV
   conversion, Merrill Edge PDF statement extractor
-- **positions** — Google Sheets position tracker
-- **cost-basis-charts** — Interactive cost basis vs. price charts
-  (YouTube tutorial project)
-- **google-sheets-setup** — Google Sheets API setup docs
+- **[positions](positions/README.md)** — Google Sheets position tracker
+- **[cost-basis-charts](cost-basis-charts/README.md)** — Interactive
+  cost basis vs. price charts (YouTube tutorial project)
+- **[options-scanner](options-scanner/README.md)** — Find mispriced
+  LEAPS to sell or buy. Three entry points: a CLI scanner for a single
+  ticker, a portfolio scanner that reads a brokerage CSV, and a
+  Streamlit web UI
+- **[google-sheets-setup](google-sheets-setup/README.md)** — Google
+  Sheets API setup docs
+
+## Quick start
+
+The fastest way to see something useful after cloning is the options
+scanner web UI — no CLI knowledge required:
+
+```bash
+git clone https://github.com/medloh/stockpile.git
+cd stockpile
+uv sync
+uv run streamlit run options-scanner/run_app.py
+```
+
+A browser tab opens at http://localhost:8501. Type a ticker on the
+**Single Ticker** tab and hit Scan, or drag a brokerage CSV onto the
+**Portfolio** tab.
+
+For the other tools (charts, positions tracker), see the
+[Running the projects](#running-the-projects) section below.
 
 ## Using Claude Code with this repo
 
@@ -28,6 +52,20 @@ Get Claude Code at: https://claude.ai/code
 
 Subscriptions start at $20/month (Pro plan). The Max plan ($100/month)
 gives higher usage limits, which is useful for longer coding sessions.
+
+### Project slash commands
+
+This repo ships with project-scoped slash commands under
+`.claude/commands/`. Inside a Claude Code session, type `/` to see
+them:
+
+| Command | What it does |
+|---------|--------------|
+| `/scan TICKER [flags]` | Run the options-scanner CLI for one ticker |
+| `/scan-portfolio --csv FILE` | Scan every open position in a brokerage CSV |
+| `/scan-ui` | Launch the options scanner web UI |
+| `/charts [--symbol X]` | Generate cost-basis charts |
+| `/positions` | Run the Google Sheets position tracker |
 
 ## Requirements
 
@@ -100,6 +138,15 @@ uv run cost-basis-charts/run_charts.py --symbol SCHW
 
 # Position tracker (Google Sheets)
 uv run positions/run_tracker.py
+
+# Options scanner — single ticker
+uv run options-scanner/run_scanner.py AMD --calls
+
+# Options scanner — every open position in a brokerage CSV
+uv run options-scanner/run_portfolio.py --csv input/schwab028.csv
+
+# Options scanner — Streamlit web UI (browser-based, no CLI knowledge)
+uv run streamlit run options-scanner/run_app.py
 ```
 
 **Do not** use `python` or `python3` directly — those will use the

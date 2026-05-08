@@ -129,8 +129,11 @@ from stocks_shared.analysis import (
     compute_closed_avg_days,
     compute_status,
     detect_open_positions,
+    detect_suspicious_positions,
+    get_last_option,
 )
-from layout import TXN_ROW, build_sections, build_txn_only_sections
+from layout import (TXN_ROW, build_open_sections, build_closed_sections,
+                    build_txn_only_sections, _offsets)
 
 
 # ── Yahoo Finance ─────────────────────────────────────────────────────────────
@@ -161,10 +164,13 @@ def process_ticker(ticker, transactions, brokerage, service,
     tab_name = ticker
     open_positions = detect_open_positions(transactions)
     status, issues = compute_status(transactions, open_positions)
+    suspicious = detect_suspicious_positions(transactions, open_positions)
 
     print(f"  Ticker: {ticker}  |  Status: {status}  |  Transactions: {len(transactions)}")
     for issue in issues:
         print(f"    ! {issue}")
+    for w in suspicious:
+        print(f"    ? {w}")
 
     if status == "Inconsistent":
         print("  Creating transaction-log-only tab for inconsistent position.")
@@ -222,10 +228,7 @@ def process_ticker(ticker, transactions, brokerage, service,
     show_calls = bool(open_calls) or any(row[2] == "Call" for row in transactions)
     show_puts  = bool(open_puts)  or any(row[2] == "Put"  for row in transactions)
 
-    # Compute dynamic row positions (mirrors layout.py build_sections logic)
-    _p = 19 if show_calls else 10
-    _i = (_p + 9) if show_puts else (19 if show_calls else 10)
-    txn_row = _i + 9
+    _p, _i, txn_row = _offsets(show_calls, show_puts)
 
     if current_call_value is None and open_calls:
         total = sum(
@@ -264,17 +267,62 @@ def process_ticker(ticker, transactions, brokerage, service,
     if closed_avg_days is not None:
         print(f"  Closed position avg days held: {closed_avg_days}")
 
-    sections = build_sections(tab_name, open_positions, last_row,
-                               avg_held_anchor, brokerage, status, closed_avg_days,
-                               show_calls=show_calls, show_puts=show_puts)
+    last_call = last_put = None
+    if status == "Closed":
+        def _fetch_opt_prices(opt, strike, is_call):
+            from datetime import timedelta, date as _date
+            for date_key, price_key in [("open_date", "price_at_open"),
+                                         ("close_date", "price_at_close")]:
+                # For assigned options the effective close price is the strike,
+                # not the market close — skip to avoid a misleading value.
+                if price_key == "price_at_close" and opt.get("disposition") == "Assigned":
+                    continue
+                ds = opt.get(date_key)
+                if not ds:
+                    continue
+                try:
+                    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", ds)
+                    if not m:
+                        continue
+                    ymd = f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
+                    end = (_date.fromisoformat(ymd) + timedelta(days=4)).isoformat()
+                    hist = fetch_history(ticker, start=ymd, end=end)
+                    if not hist.empty:
+                        opt[price_key] = round(float(hist["Close"].iloc[0]), 2)
+                except Exception:
+                    pass
+            # Resolve ITM/OTM for BTC cases now that we have the close price
+            if opt.get("itm_at_close") is None and opt.get("price_at_close") is not None:
+                px = opt["price_at_close"]
+                opt["itm_at_close"] = (px > strike) if is_call else (px < strike)
+
+        if show_calls:
+            last_call = get_last_option(transactions, "Call")
+            if last_call:
+                _fetch_opt_prices(last_call, last_call["strike"], is_call=True)
+        if show_puts:
+            last_put = get_last_option(transactions, "Put")
+            if last_put:
+                _fetch_opt_prices(last_put, last_put["strike"], is_call=False)
+
+    if status == "Closed":
+        sections = build_closed_sections(tab_name, open_positions, last_row,
+                                         brokerage, closed_avg_days,
+                                         show_calls=show_calls, show_puts=show_puts,
+                                         last_call=last_call, last_put=last_put)
+    else:
+        sections = build_open_sections(tab_name, open_positions, last_row,
+                                       avg_held_anchor, brokerage,
+                                       show_calls=show_calls, show_puts=show_puts)
     sheets.batch_write(service, tab_name, sections)
 
     sheets.write_range(service, tab_name, "B5",
                        [[current_price if current_price is not None else ""]])
-    sheets.write_range(service, tab_name, "B7:B8", [
-        [current_call_value if current_call_value is not None else ""],
-        [current_put_value if current_put_value is not None else ""],
-    ])
+    if status != "Closed":
+        sheets.write_range(service, tab_name, "B7:B8", [
+            [current_call_value if current_call_value is not None else ""],
+            [current_put_value if current_put_value is not None else ""],
+        ])
 
     print(f"  Writing {len(transactions)} transactions...")
     chunk = 50
@@ -283,6 +331,23 @@ def process_ticker(ticker, transactions, brokerage, service,
         batch = [_txn_display(r) for r in transactions[i:i+chunk]]
         end_row = start_row + len(batch) - 1
         sheets.write_range(service, tab_name, f"A{start_row}:K{end_row}", batch)
+
+    if suspicious:
+        warn_row = txn_row + len(transactions) + 1
+        sheets.write_range(service, tab_name, f"A{warn_row}", [["Possible data issues:"]])
+        for idx, w in enumerate(suspicious):
+            sheets.write_range(service, tab_name, f"A{warn_row + 1 + idx}", [[w]])
+        n_warn_rows = 1 + len(suspicious)
+        sheets.apply_fmt(service, sheet_id, [
+            sheets.warning_label(sheet_id, warn_row - 1, warn_row - 1 + n_warn_rows),
+            *[{"mergeCells": {
+                "range": {"sheetId": sheet_id,
+                          "startRowIndex": warn_row - 1 + r,
+                          "endRowIndex": warn_row + r,
+                          "startColumnIndex": 0, "endColumnIndex": 11},
+                "mergeType": "MERGE_ALL",
+            }} for r in range(n_warn_rows)],
+        ])
 
     adj_text = (
         "** Adj Cost Basis / Share: net sum of all cash transactions (stock buys/sells, "
@@ -317,7 +382,7 @@ def process_ticker(ticker, transactions, brokerage, service,
     if issues:
         sheets.write_range(service, tab_name, "K1", [["Data issues: " + "; ".join(issues)]])
     sheets.write_range(service, tab_name, "K6", [[adj_text]])
-    if show_calls:
+    if show_calls and status != "Closed":
         sheets.write_range(service, tab_name, "K17", [[tv_call_text]])
     if show_puts:
         sheets.write_range(service, tab_name, f"K{p+7}", [[tv_put_text]])
@@ -350,11 +415,11 @@ def process_ticker(ticker, transactions, brokerage, service,
         *([footnote_merge(16),
            sheets.light_bg(sheet_id, 16, 6, 17, 8),
            sheets.light_bg(sheet_id, 16, 10, 17, 26),
-           footnote_overflow(16)] if show_calls else []),
+           footnote_overflow(16)] if show_calls and status != "Closed" else []),
         *([footnote_merge(p0 + 7),
            sheets.light_bg(sheet_id, p0 + 7, 6, p0 + 8, 8),
            sheets.light_bg(sheet_id, p0 + 7, 10, p0 + 8, 26),
-           footnote_overflow(p0 + 7)] if show_puts else []),
+           footnote_overflow(p0 + 7)] if show_puts and status != "Closed" else []),
         footnote_merge(i0 + 4), footnote_merge(i0 + 5),
         sheets.light_bg(sheet_id, 5, 0, 6, 2),
         sheets.light_bg(sheet_id, 5, 10, 6, 26),
@@ -408,45 +473,67 @@ def process_ticker(ticker, transactions, brokerage, service,
 
     if show_calls:
         fmt_requests += [
-            sheets.section_header(sheet_id, 9),                  # CALL HISTORY
+            sheets.section_header(sheet_id, 9),                  # CALL HISTORY / LAST CALL
             sheets.currency(sheet_id, 10, 1, 15, 2),             # Call history data
             sheets.currency(sheet_id, 10, 4, 11, 5),             # Strike
             sheets.date_fmt(sheet_id, 12, 4, 13, 5),             # Date Opened
-            sheets.currency(sheet_id, 14, 4, 15, 5),             # Price at Open
-            sheets.plain_number(sheet_id, 13, 4, 14, 5),         # Days Open
-            sheets.plain_number(sheet_id, 15, 4, 16, 5),         # Days Left
-            sheets.plain_number(sheet_id, 16, 4, 17, 5),         # Contracts
-            sheets.currency(sheet_id, 10, 7, 13, 8),             # Metrics premium-P&L
-            sheets.right_align(sheet_id, 13, 7, 14, 8),          # Status
-            sheets.currency(sheet_id, 14, 7, 16, 8),             # Intrinsic/Time Value
-            sheets.percent(sheet_id, 16, 7, 17, 8),              # TV Ann Yield
+            sheets.currency(sheet_id, 10, 7, 13, 8),             # Metrics premium
             sheets.green_if_positive(sheet_id, 12, 1, 13, 2),    # Net Call Premium
             sheets.green_if_positive(sheet_id, 14, 1, 15, 2),    # Covered Call Results
             sheets.green_if_positive(sheet_id, 10, 1, 11, 2),    # Call Premium Received
             sheets.green_if_positive(sheet_id, 10, 7, 11, 8),    # Metrics Premium Received
+        ] + ([
+            sheets.plain_number(sheet_id, 13, 4, 14, 5),         # Days Open (open: row 14)
+            sheets.currency(sheet_id, 14, 4, 15, 5),             # Price at Open (open: row 15)
+            sheets.plain_number(sheet_id, 15, 4, 16, 5),         # Days Left
+            sheets.plain_number(sheet_id, 16, 4, 17, 5),         # Contracts (open: row 17)
+            sheets.right_align(sheet_id, 13, 7, 14, 8),          # Status
+            sheets.currency(sheet_id, 14, 7, 16, 8),             # Intrinsic/Time Value
+            sheets.percent(sheet_id, 16, 7, 17, 8),              # TV Ann Yield
             sheets.green_if_positive(sheet_id, 12, 7, 13, 8),    # Unrealized P&L
-        ]
+        ] if status != "Closed" else [
+            sheets.date_fmt(sheet_id, 13, 4, 14, 5),             # Date Closed (closed: row 14)
+            sheets.plain_number(sheet_id, 14, 4, 15, 5),         # Days Open (closed: row 15)
+            sheets.currency(sheet_id, 15, 4, 16, 5),             # Price at Open (closed: row 16)
+            sheets.currency(sheet_id, 16, 4, 17, 5),             # Price at Close (closed: row 17)
+            sheets.plain_number(sheet_id, 17, 4, 18, 5),         # Contracts (closed: row 18)
+            sheets.right_align(sheet_id, 13, 7, 14, 8),          # Status at Close
+            sheets.right_align(sheet_id, 14, 7, 15, 8),          # Closed By
+            sheets.currency(sheet_id, 15, 7, 16, 8),             # Missed Upside (row 16)
+            sheets.red_text(sheet_id, 15, 7, 16, 8),             # Missed Upside red
+        ])
 
     if show_puts:
         fmt_requests += [
-            sheets.section_header(sheet_id, p0),                 # PUT HISTORY
+            sheets.section_header(sheet_id, p0),                 # PUT HISTORY / LAST PUT
             sheets.currency(sheet_id, p0 + 1, 1, p0 + 6, 2),    # Put history data
             sheets.currency(sheet_id, p0 + 1, 4, p0 + 2, 5),    # Strike
             sheets.date_fmt(sheet_id, p0 + 3, 4, p0 + 4, 5),    # Date Opened
-            sheets.currency(sheet_id, p0 + 5, 4, p0 + 6, 5),    # Price at Open
-            sheets.plain_number(sheet_id, p0 + 4, 4, p0 + 5, 5),# Days Open
-            sheets.plain_number(sheet_id, p0 + 6, 4, p0 + 7, 5),# Days Left
-            sheets.plain_number(sheet_id, p0 + 7, 4, p0 + 8, 5),# Contracts
-            sheets.currency(sheet_id, p0 + 1, 7, p0 + 4, 8),    # Metrics premium-P&L
-            sheets.right_align(sheet_id, p0 + 4, 7, p0 + 5, 8), # Status
-            sheets.currency(sheet_id, p0 + 5, 7, p0 + 7, 8),    # Intrinsic/Time Value
-            sheets.percent(sheet_id, p0 + 7, 7, p0 + 8, 8),     # TV Ann Yield
+            sheets.currency(sheet_id, p0 + 1, 7, p0 + 4, 8),    # Metrics premium
             sheets.green_if_positive(sheet_id, p0 + 3, 1, p0 + 4, 2),  # Net Put Premium
             sheets.green_if_positive(sheet_id, p0 + 5, 1, p0 + 6, 2),  # Put Results
             sheets.green_if_positive(sheet_id, p0 + 1, 1, p0 + 2, 2),  # Put Premium Received
             sheets.green_if_positive(sheet_id, p0 + 1, 7, p0 + 2, 8),  # Metrics Premium Received
+        ] + ([
+            sheets.plain_number(sheet_id, p0 + 4, 4, p0 + 5, 5),# Days Open (open: p0+5)
+            sheets.currency(sheet_id, p0 + 5, 4, p0 + 6, 5),    # Price at Open (open: p0+6)
+            sheets.plain_number(sheet_id, p0 + 6, 4, p0 + 7, 5),# Days Left
+            sheets.plain_number(sheet_id, p0 + 7, 4, p0 + 8, 5),# Contracts (open: p0+8)
+            sheets.right_align(sheet_id, p0 + 4, 7, p0 + 5, 8), # Status
+            sheets.currency(sheet_id, p0 + 5, 7, p0 + 7, 8),    # Intrinsic/Time Value
+            sheets.percent(sheet_id, p0 + 7, 7, p0 + 8, 8),     # TV Ann Yield
             sheets.green_if_positive(sheet_id, p0 + 3, 7, p0 + 4, 8),  # Unrealized P&L
-        ]
+        ] if status != "Closed" else [
+            sheets.date_fmt(sheet_id, p0 + 4, 4, p0 + 5, 5),    # Date Closed (closed: p0+5)
+            sheets.plain_number(sheet_id, p0 + 5, 4, p0 + 6, 5),# Days Open (closed: p0+6)
+            sheets.currency(sheet_id, p0 + 6, 4, p0 + 7, 5),    # Price at Open (closed: p0+7)
+            sheets.currency(sheet_id, p0 + 7, 4, p0 + 8, 5),    # Price at Close (closed: p0+8)
+            sheets.plain_number(sheet_id, p0 + 8, 4, p0 + 9, 5),# Contracts (closed: p0+9)
+            sheets.right_align(sheet_id, p0 + 4, 7, p0 + 5, 8), # Status at Close
+            sheets.right_align(sheet_id, p0 + 5, 7, p0 + 6, 8), # Closed By
+            sheets.currency(sheet_id, p0 + 6, 7, p0 + 7, 8),    # Assignment Loss (p0+7)
+            sheets.red_text(sheet_id, p0 + 6, 7, p0 + 7, 8),    # Assignment Loss red
+        ])
     sheets.apply_fmt(service, sheet_id, fmt_requests)
 
     print("  Updating Summary...")
@@ -476,6 +563,7 @@ def _load_parser(brokerage: str):
 
 
 def _run_account(acct, csv_path: str, service):
+    start_time = datetime.now()
     parse_all_transactions = _load_parser(acct.brokerage)
 
     sheets.configure(acct.sheet_id, config.CREDS_PATH, config.TOKEN_PATH)
@@ -502,8 +590,12 @@ def _run_account(acct, csv_path: str, service):
     sheets.delete_placeholder(service)
     sheets.reorder_summary_tabs_first(service)
     print("\nWriting Summary totals...")
-    sheets.write_summary_totals(service, "Summary-Open")
+    labels_row = sheets.write_summary_totals(service, "Summary-Open")
     sheets.write_summary_totals(service, "Summary-Closed")
+    end_time = datetime.now()
+    if labels_row is not None:
+        sheets.write_run_timestamps(service, "Summary-Open", labels_row, start_time, end_time)
+        print(f"  Run timestamps written (start {start_time:%H:%M:%S}, end {end_time:%H:%M:%S}).")
 
 
 _LOG_PATH = Path(__file__).parent.parent / "tracker.log"

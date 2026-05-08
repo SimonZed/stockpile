@@ -140,6 +140,17 @@ def right_align(sheet_id, r1, c1, r2, c2):
         "fields": "userEnteredFormat.horizontalAlignment",
     }}
 
+def red_text(sheet_id, r1, c1, r2, c2):
+    return {"repeatCell": {
+        "range": {"sheetId": sheet_id,
+                  "startRowIndex": r1, "endRowIndex": r2,
+                  "startColumnIndex": c1, "endColumnIndex": c2},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"foregroundColor": {"red": 0.8, "green": 0.0, "blue": 0.0}},
+        }},
+        "fields": "userEnteredFormat.textFormat.foregroundColor",
+    }}
+
 def green_if_positive(sheet_id, r1, c1, r2, c2):
     return {"addConditionalFormatRule": {
         "rule": {
@@ -323,7 +334,7 @@ def _ensure_summary_tab(service, stab):
         write_range(service, stab, "A1:L1", [group_row])
         headers = ["Position", "Stock\nPrice", "Underlying\nMkt Val", "Underlying\nGain",
                    "All Call\nResults", "All Put\nResults",
-                   "Dividends", "Close-out\nValue", "Avg Days\nHeld",
+                   "Dividends", "Close-out\nValue", "Total Days\nHeld",
                    "Amount\nInvested", "Overall\nP/L", "Ann Yield"]
         write_range(service, stab, "A2:L2", [headers])
         apply_fmt(service, sid, [
@@ -354,7 +365,7 @@ def _ensure_summary_tab(service, stab):
                 "range": {"sheetId": sid, "startRowIndex": 2, "endRowIndex": 1000, "startColumnIndex": 9, "endColumnIndex": 11},
                 "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": "$#,##0.00;[RED]-$#,##0.00"}}},
                 "fields": "userEnteredFormat.numberFormat"}},
-            # Avg Days Held (I=col 8): integer
+            # Total Days Held (I=col 8): integer
             {"repeatCell": {
                 "range": {"sheetId": sid, "startRowIndex": 2, "endRowIndex": 1000, "startColumnIndex": 8, "endColumnIndex": 9},
                 "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0"}}},
@@ -450,7 +461,22 @@ def _ensure_summary_tab(service, stab):
     ])
 
 
-def _write_summary_row(service, tab_name, status, issues, show_calls=True, show_puts=True):
+def warning_label(sheet_id, start_row0, end_row0):
+    """Orange background + bold for the suspicious-warning block on a position tab."""
+    return {"repeatCell": {
+        "range": {"sheetId": sheet_id,
+                  "startRowIndex": start_row0, "endRowIndex": end_row0,
+                  "startColumnIndex": 0, "endColumnIndex": 11},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"bold": True},
+            "backgroundColor": {"red": 1.0, "green": 0.898, "blue": 0.6},
+        }},
+        "fields": "userEnteredFormat(textFormat,backgroundColor)",
+    }}
+
+
+def _write_summary_row(service, tab_name, status, issues,
+                       show_calls=True, show_puts=True):
     stab = _STATUS_TAB[status]
     _ensure_summary_tab(service, stab)
 
@@ -641,7 +667,8 @@ def write_summary_totals(service, stab):
         )
         if not has_slices:
             print("  Skipping pie chart — no close-out values to plot.")
-            return
+            return totals_row + 3
+        _CHART_HEIGHT_PX = 400
         _execute_with_retry(service.spreadsheets().batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
             body={"requests": [{"addChart": {"chart": {
@@ -668,11 +695,36 @@ def write_summary_totals(service, stab):
                         "columnIndex": 0,
                     },
                     "widthPixels": 600,
-                    "heightPixels": 400,
+                    "heightPixels": _CHART_HEIGHT_PX,
                 }},
             }}}]}
         ))
         print("  Close-out Value pie chart added to Summary-Open.")
+        # Labels go below the chart; 21px/row is the Sheets default row height
+        return totals_row + 2 + (_CHART_HEIGHT_PX // 21) + 2
+
+
+def write_run_timestamps(service, stab, labels_row, start_dt, end_dt):
+    """Write Last Start / Last End label-value pairs below the chart on stab."""
+    summary_sheet_id = get_sheet_id(service, stab)
+    if summary_sheet_id is None:
+        return
+    fmt = "%Y-%m-%d %H:%M:%S"
+    write_range(service, stab, f"A{labels_row}:B{labels_row + 1}", [
+        ["Last Start", start_dt.strftime(fmt)],
+        ["Last End",   end_dt.strftime(fmt)],
+    ])
+    apply_fmt(service, summary_sheet_id, [
+        {"repeatCell": {
+            "range": {
+                "sheetId": summary_sheet_id,
+                "startRowIndex": labels_row - 1, "endRowIndex": labels_row + 1,
+                "startColumnIndex": 0, "endColumnIndex": 1,
+            },
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+            "fields": "userEnteredFormat.textFormat",
+        }},
+    ])
 
 
 def write_other_transactions_tab(service, other_rows):

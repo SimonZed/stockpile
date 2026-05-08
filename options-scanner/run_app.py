@@ -8,10 +8,99 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Options Scanner", page_icon="📈", layout="wide")
+st.set_page_config(
+    page_title="Options Scanner",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+
+# ── Theme switcher ──────────────────────────────────────────────────────────
+# Streamlit's three-dot menu → Settings → Theme only supports ONE custom
+# theme, so we offer four "in-between" themes here via a sidebar control.
+# The sidebar is collapsed by default; click the >> arrow on the left edge
+# to open it. None of these add vertical space to the form.
+
+THEMES: dict[str, dict[str, str] | None] = {
+    "Default":         None,
+    "Sepia":           {"bg": "#f4ede0", "sec": "#ebe2d0",
+                        "text": "#3d2f1f", "muted": "#7a5d3a"},
+    "Solarized Light": {"bg": "#fdf6e3", "sec": "#eee8d5",
+                        "text": "#586e75", "muted": "#93a1a1"},
+    "Soft":            {"bg": "#f1f5f9", "sec": "#e2e8f0",
+                        "text": "#334155", "muted": "#64748b"},
+}
+
+
+def _apply_theme(theme_name: str) -> None:
+    cfg = THEMES.get(theme_name)
+    if not cfg:
+        return
+    bg, sec, text, muted = cfg["bg"], cfg["sec"], cfg["text"], cfg["muted"]
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stAppViewContainer"], .main, body {{
+            background-color: {bg};
+        }}
+        [data-testid="stHeader"] {{
+            background-color: {bg};
+        }}
+        [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
+            background-color: {sec};
+        }}
+        /* Page-level text. Scoped selectors only — using bare `span` or
+           `label` here would bleed into Streamlit's widgets and break
+           internal contrast (e.g. dark text inside a white button). */
+        .stMarkdown, .stMarkdown p, .stMarkdown span,
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stMetricValue"], [data-testid="stMetricLabel"],
+        [data-testid="stMetricDelta"],
+        [data-testid="stTabs"] button p,
+        [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
+        label[data-testid="stWidgetLabel"] {{
+            color: {text};
+        }}
+        /* Radio / checkbox option labels (the per-option text, not the
+           widget's main label). Streamlit renders these as a wrapper
+           label containing a div/p with the option text. */
+        [data-testid="stRadio"] [role="radiogroup"] label,
+        [data-testid="stRadio"] [role="radiogroup"] label p,
+        [data-testid="stRadio"] [role="radiogroup"] label div,
+        [data-testid="stCheckbox"] label,
+        [data-testid="stCheckbox"] label p {{
+            color: {text};
+        }}
+        .stCaption, [data-testid="stCaptionContainer"],
+        small, [data-testid="stCaption"] {{
+            color: {muted};
+        }}
+        /* Secondary buttons (download, etc.) — harmonize bg/text with
+           the theme. Primary buttons are styled separately (orange) in
+           the always-on layout block, so excluded here. */
+        .stButton > button:not([kind="primary"]),
+        .stDownloadButton > button,
+        button[data-testid="stBaseButton-secondary"] {{
+            background-color: {sec};
+            color: {text};
+            border: 1px solid {muted};
+        }}
+        .stDownloadButton > button p,
+        .stButton > button:not([kind="primary"]) p {{
+            color: {text};
+        }}
+        [data-testid="stDataFrame"], .stDataFrame {{
+            background-color: {sec};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ── Cached data fetching ─────────────────────────────────────────────────────
@@ -97,6 +186,199 @@ def _show_df(sub: pd.DataFrame, roll_close_cost: float | None = None) -> None:
                  use_container_width=True)
 
 
+def _show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
+                   min_oi: int, top_n: int, buy: bool,
+                   ticker: str = "", key_prefix: str = "s") -> None:
+    """Layered chart: per-expiration smile with the table's top-N picks
+    highlighted. Faded background dots are the rest of the chain at the
+    selected expiration; bright outlined dots are the picks."""
+    if df.empty:
+        return
+
+    chart_df = df.copy()
+    if mode in ("call", "put"):
+        chart_df = chart_df[chart_df["type"] == mode]
+    if chart_df.empty:
+        return
+
+    iv_asc = buy
+    pick_types = ["call", "put"] if mode == "both" else [mode]
+    top_keys: set[tuple[str, float, str]] = set()
+    for t in pick_types:
+        ranked = (
+            chart_df[(chart_df["type"] == t)
+                     & (chart_df["open_interest"] >= min_oi)]
+            .sort_values(["iv_excess", "open_interest"],
+                         ascending=[iv_asc, False])
+            .head(top_n)
+        )
+        for _, r in ranked.iterrows():
+            top_keys.add((r["type"], float(r["strike"]), r["expiration"]))
+
+    chart_df["is_top"] = chart_df.apply(
+        lambda r: (r["type"], float(r["strike"]), r["expiration"]) in top_keys,
+        axis=1,
+    )
+    chart_df["IV%"]        = (chart_df["iv"] * 100).round(2)
+    chart_df["FittedIV%"]  = (chart_df["iv_fitted"] * 100).round(2)
+    chart_df["IV+pp"]      = (chart_df["iv_excess"] * 100).round(2)
+    chart_df["ExpLabel"]   = chart_df["expiration"].apply(
+        lambda d: datetime.strptime(d, "%Y-%m-%d").strftime("%b %d '%y")
+    )
+
+    expirations = sorted(chart_df["expiration"].unique())
+    exp_labels  = {
+        e: datetime.strptime(e, "%Y-%m-%d").strftime("%b %d '%y")
+        for e in expirations
+    }
+    pick_counts = {
+        e: int(chart_df[(chart_df["expiration"] == e)
+                        & chart_df["is_top"]].shape[0])
+        for e in expirations
+    }
+    # Default to the expiration containing the strongest signal — the
+    # pick with the highest IV+pp (or lowest, in buy mode). Falls back
+    # to the first expiration if there are no picks for some reason.
+    picks_df = chart_df[chart_df["is_top"]]
+    if not picks_df.empty:
+        extreme_idx = (picks_df["iv_excess"].idxmin() if buy
+                       else picks_df["iv_excess"].idxmax())
+        default_exp = picks_df.loc[extreme_idx, "expiration"]
+        default_idx = expirations.index(default_exp)
+    else:
+        default_idx = 0
+
+    # Header row: title on the left, expiration selector on the right
+    h1, h2 = st.columns([1, 2], vertical_alignment="bottom")
+    with h1:
+        # Bottom margin lifts the heading 5px up relative to the
+        # selectbox in the bottom-aligned column row.
+        st.markdown(
+            "<h5 style='margin:0 0 5px 0'>Volatility surface</h5>",
+            unsafe_allow_html=True,
+        )
+    with h2:
+        chosen_exp = st.selectbox(
+            "Expiration to chart",
+            options=expirations,
+            index=default_idx,
+            format_func=lambda d: f"{exp_labels[d]}  ({pick_counts[d]} pick"
+                                  f"{'s' if pick_counts[d] != 1 else ''})",
+            key=f"{key_prefix}_chart_exp",
+            help="Each expiration has its own volatility smile. The number "
+                 "in parentheses is how many of the table's top picks live "
+                 "at that expiration.",
+            label_visibility="collapsed",
+        )
+
+    sub = chart_df[chart_df["expiration"] == chosen_exp].sort_values(
+        ["type", "strike"]
+    )
+    if sub.empty:
+        return
+
+    excess_max = max(abs(sub["IV+pp"].min()), abs(sub["IV+pp"].max()), 1.0)
+    color_scale = alt.Scale(
+        domain=[-excess_max, 0, excess_max],
+        range=["#2563eb", "#cbd5e1", "#dc2626"],
+    )
+    shape_scale = alt.Scale(domain=["call", "put"],
+                            range=["circle", "square"])
+
+    # X-domain extended so the spot line is always inside the visible range
+    x_min = min(float(sub["strike"].min()), spot) * 0.97
+    x_max = max(float(sub["strike"].max()), spot) * 1.03
+    y_max = float(sub[["IV%", "FittedIV%"]].values.max())
+
+    base_x = alt.X(
+        "strike:Q", title="Strike",
+        scale=alt.Scale(domain=[x_min, x_max]),
+        axis=alt.Axis(format="$,.0f"),
+    )
+
+    tooltip_fields = [
+        alt.Tooltip("strike:Q",        title="Strike", format="$,.0f"),
+        alt.Tooltip("ExpLabel:N",      title="Expiration"),
+        alt.Tooltip("type:N",          title="Type"),
+        alt.Tooltip("IV%:Q",           format=".1f"),
+        alt.Tooltip("FittedIV%:Q",     title="Fitted IV%", format=".1f"),
+        alt.Tooltip("IV+pp:Q",         title="IV excess (pp)", format="+.1f"),
+        alt.Tooltip("delta:Q",         format=".2f"),
+        alt.Tooltip("open_interest:Q", title="OI"),
+    ]
+
+    fitted_line = alt.Chart(sub).mark_line(
+        color="#94a3b8", strokeDash=[4, 3], size=2,
+    ).encode(
+        x=base_x,
+        y=alt.Y("FittedIV%:Q", title="Implied Volatility (%)"),
+        detail="type:N",
+    )
+
+    background = alt.Chart(sub[~sub["is_top"]]).mark_circle(
+        size=60, opacity=0.30,
+    ).encode(
+        x=base_x,
+        y="IV%:Q",
+        color=alt.Color("IV+pp:Q", scale=color_scale,
+                        legend=alt.Legend(title="IV excess (pp)")),
+        shape=alt.Shape("type:N", scale=shape_scale,
+                        legend=alt.Legend(title="Type")),
+        tooltip=tooltip_fields,
+    )
+
+    picks = alt.Chart(sub[sub["is_top"]]).mark_point(
+        size=260, opacity=1.0, filled=True,
+        stroke="#0f172a", strokeWidth=2,
+    ).encode(
+        x=base_x,
+        y="IV%:Q",
+        color=alt.Color("IV+pp:Q", scale=color_scale, legend=None),
+        shape=alt.Shape("type:N", scale=shape_scale, legend=None),
+        tooltip=tooltip_fields,
+    )
+
+    spot_df = pd.DataFrame({"x": [spot], "y": [y_max],
+                            "label": [f"Spot ${spot:.2f}"]})
+    spot_rule = alt.Chart(spot_df).mark_rule(
+        color="#0f172a", strokeDash=[3, 3], size=2,
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[x_min, x_max])),
+        tooltip=[alt.Tooltip("x:Q", title="Spot", format="$,.2f")],
+    )
+    spot_label = alt.Chart(spot_df).mark_text(
+        align="left", baseline="top", dx=5, dy=2,
+        color="#0f172a", fontWeight="bold", fontSize=11,
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[x_min, x_max])),
+        y="y:Q",
+        text="label:N",
+    )
+
+    type_word = {"call": "calls", "put": "puts", "both": "options"}[mode]
+    title_text = (f"{ticker} {type_word} — {exp_labels[chosen_exp]}"
+                  if ticker else f"{type_word} — {exp_labels[chosen_exp]}")
+    chart = (
+        fitted_line + background + picks + spot_rule + spot_label
+    ).properties(
+        height=380,
+        title=alt.TitleParams(
+            text=title_text,
+            fontSize=16, fontWeight="bold", anchor="start",
+            color="#0f172a",
+        ),
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        "Dashed gray line is the fitted volatility surface for this "
+        "expiration. **Larger outlined dots are the top picks shown in "
+        "the table — across all expirations.** Faded dots are the rest "
+        "of the chain at this expiration for context. Red = rich premium "
+        "(sell), blue = cheap (buy). Vertical dashed line marks the "
+        "current spot price."
+    )
+
+
 def _show_scan_results(df: pd.DataFrame, mode: str, buy: bool,
                        roll_close_cost: float | None,
                        min_oi: int, top_n: int) -> None:
@@ -118,46 +400,77 @@ def _show_scan_results(df: pd.DataFrame, mode: str, buy: bool,
 # ── Tab: Single Ticker ───────────────────────────────────────────────────────
 
 def _tab_single() -> None:
-    # ── Inputs (no form — lets roll section show/hide dynamically) ────────────
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        ticker = st.text_input("Ticker Symbol", "AAPL", key="s_ticker")
-        action = st.radio("Action", ["Sell (find overpriced)", "Buy (find underpriced)"],
-                          key="s_action")
-        option_type = st.radio("Option Type", ["Calls", "Puts", "Both"],
-                               key="s_opt_type")
-    with c2:
-        min_dte = st.number_input("Min Days to Expiration", value=365, min_value=1,
-                                  key="s_min_dte")
-        max_dte_inp = st.number_input("Max DTE (0 = no limit)", value=0, min_value=0,
-                                      key="s_max_dte")
-        min_oi = st.number_input("Min Open Interest", value=25, min_value=0,
-                                 key="s_min_oi")
-    with c3:
-        delta_range = st.slider("Delta Range (abs value)", 0.0, 1.0, (0.10, 0.50),
-                                step=0.05, key="s_delta")
-        top_n = st.number_input("Max rows to show", value=10, min_value=1,
-                                max_value=50, key="s_top")
+    # ── Top: ticker + flow selector on the same row ───────────────────────────
+    # ── Row 1: ticker (narrow) + flow selector ────────────────────────────────
+    tc, fc = st.columns([1, 6])
+    with tc:
+        ticker = st.text_input("Ticker", "AAPL", key="s_ticker")
+    with fc:
+        flow = st.radio(
+            "What do you want to do?",
+            ["Find new options", "Roll an existing position"],
+            horizontal=True,
+            key="s_flow",
+        )
+    rolling = (flow == "Roll an existing position")
 
-    # ── Roll section (appears only when checkbox is ticked) ───────────────────
-    rolling = st.checkbox("Rolling an existing position?", key="s_rolling")
-    roll_strike = 0.0
-    roll_exp    = date.today()
-    roll_type_sel = "call"
+    # Defaults so the same scan code path handles both flows
+    buy            = False
+    option_type    = "Calls"
+    roll_type_sel  = "call"
+    roll_strike    = 0.0
+    roll_exp       = date.today()
+
+    # ── Row 2: action-specific controls (compact, horizontal) ─────────────────
     if rolling:
-        st.caption("Enter the details of the position you want to close and replace.")
-        r1, r2, r3 = st.columns(3)
-        with r1:
+        rc1, rc2, rc3, _ = st.columns([1, 1, 1.2, 3])
+        with rc1:
             roll_type_sel = st.selectbox("Position type", ["call", "put"],
                                          key="s_roll_type")
-        with r2:
+        with rc2:
             roll_strike = st.number_input("Current strike", value=0.0,
-                                          min_value=0.0, step=1.0, key="s_roll_strike")
-        with r3:
+                                          min_value=0.0, step=1.0,
+                                          key="s_roll_strike")
+        with rc3:
             roll_exp = st.date_input("Current expiration", key="s_roll_exp")
+    else:
+        a1, a2, _ = st.columns([2.2, 1.8, 2])
+        with a1:
+            action = st.radio(
+                "Direction",
+                ["Sell (find overpriced)", "Buy (find underpriced)"],
+                horizontal=True,
+                key="s_action",
+            )
+            buy = action.startswith("Buy")
+        with a2:
+            option_type = st.radio("Option Type",
+                                   ["Calls", "Puts", "Both"],
+                                   horizontal=True, key="s_opt_type")
 
-    scanned = st.button("Scan", type="primary", use_container_width=True,
-                         key="s_scan_btn")
+    # ── Row 3: all filters + Scan on one row, bottom-aligned ─────────────────
+    n1, n2, n3, n4, n5, n6, _ = st.columns(
+        [1, 1, 1, 2, 1, 1.5, 2.5],
+        vertical_alignment="bottom",
+    )
+    with n1:
+        min_dte = st.number_input("Min DTE", value=365, min_value=1,
+                                  key="s_min_dte")
+    with n2:
+        max_dte_inp = st.number_input("Max DTE", value=0, min_value=0,
+                                      help="0 = no limit", key="s_max_dte")
+    with n3:
+        min_oi = st.number_input("Min OI", value=25, min_value=0,
+                                 key="s_min_oi")
+    with n4:
+        delta_range = st.slider("Delta Range (abs value)", 0.0, 1.0,
+                                (0.10, 0.50), step=0.05, key="s_delta")
+    with n5:
+        top_n = st.number_input("Top N", value=10, min_value=1,
+                                max_value=50, key="s_top")
+    with n6:
+        scanned = st.button("Scan", type="primary",
+                            use_container_width=True, key="s_scan_btn")
 
     # ── Run scan on button click, store in session state ──────────────────────
     if scanned:
@@ -167,9 +480,6 @@ def _tab_single() -> None:
             st.session_state.pop("single_results", None)
             return
 
-        buy = action.startswith("Buy")
-
-        # In roll mode, force option type to match the position being rolled
         if rolling:
             eff_opt_fetch = roll_type_sel + "s"   # "calls" or "puts"
             eff_mode      = roll_type_sel          # "call"  or "put"
@@ -259,6 +569,10 @@ def _tab_single() -> None:
         st.info(f"Rolling {res['roll_type']} ${res['roll_strike']:.0f} "
                 f"{res['roll_exp_str']} — close cost (mid): **${rcc:.2f}**")
 
+    _show_iv_chart(df_filt, spot, mode_r, res["min_oi"], res["top_n"],
+                   buy_r, ticker=ticker_r, key_prefix="s")
+
+    st.subheader("Top candidates")
     _show_scan_results(df_filt, mode_r, buy_r, rcc,
                        res["min_oi"], res["top_n"])
 
@@ -398,6 +712,12 @@ def _tab_portfolio() -> None:
                 roll_close = res["roll_close_costs"].get(first["symbol"])
 
             df_filt = df[df["delta"].abs() <= port_max_delta].copy()
+
+            _show_iv_chart(df_filt, spot, "call",
+                           int(port_min_oi), int(port_top), False,
+                           ticker=ticker, key_prefix=f"p_{ticker}")
+
+            st.markdown("**Top candidates**")
             _show_scan_results(df_filt, "call", False, roll_close,
                                int(port_min_oi), int(port_top))
 
@@ -416,7 +736,98 @@ def _tab_portfolio() -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-st.title("📈 Options Scanner")
+# Layout tweaks: tighten the header→tabs gap; keep the collapsed-sidebar
+# toggle visible (soft pill background + forced color so it shows on any
+# theme, including Dim/Sepia).
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1rem !important; }
+
+    /* Compact metric cards — Streamlit's default value font is ~2rem, way
+       too big for our header row. */
+    [data-testid="stMetricValue"] {
+        font-size: 1.25rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.85rem !important;
+    }
+
+    /* Primary (Scan) button — always orange so it stands out on every
+       theme, not just on hover. */
+    .stButton > button[kind="primary"],
+    button[data-testid="stBaseButton-primary"] {
+        background-color: #f97316 !important;
+        color: #ffffff !important;
+        border-color: #f97316 !important;
+    }
+    .stButton > button[kind="primary"] p,
+    button[data-testid="stBaseButton-primary"] p {
+        color: #ffffff !important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    button[data-testid="stBaseButton-primary"]:hover {
+        background-color: #ea580c !important;
+        border-color: #ea580c !important;
+        color: #ffffff !important;
+    }
+
+    /* Sidebar toggle, both states. In Streamlit 1.57:
+         close button (<<) — wrapped in [data-testid="stSidebarCollapseButton"]
+         open  button (>>) — the button itself is [data-testid="stExpandSidebarButton"]
+       The icon is a Material Icons font glyph, so it inherits `color`
+       from the parent (no SVG fill needed). */
+    [data-testid="stSidebarCollapseButton"] button,
+    button[data-testid="stExpandSidebarButton"] {
+        background: #ffffff !important;
+        border: 2px solid #1e293b !important;
+        border-radius: 0.5rem !important;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35) !important;
+        z-index: 999992 !important;
+        opacity: 1 !important;
+        padding: 0.25rem !important;
+    }
+    [data-testid="stSidebarCollapseButton"] *,
+    button[data-testid="stExpandSidebarButton"] * {
+        color: #1e293b !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# App title overlaid on Streamlit's top header bar. Title sits to the
+# right of the sidebar toggle, aligned with the left edge of the form
+# content (matches .block-container's left padding in `layout=wide`).
+# Sized larger so its vertical footprint matches the chunky toggle pill.
+st.markdown(
+    """
+    <div style='position:fixed; top:5px; left:5rem; height:2.875rem;
+                display:flex; align-items:center;
+                font-size:1.35rem; font-weight:600; z-index:999990;
+                pointer-events:none;'>
+      📈 Options Scanner
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Hidden-by-default theme switcher (sidebar)
+with st.sidebar:
+    st.markdown("**Theme**")
+    theme_choice = st.radio(
+        "Theme",
+        list(THEMES.keys()),
+        index=list(THEMES.keys()).index("Sepia"),
+        key="theme_choice",
+        label_visibility="collapsed",
+    )
+    st.caption(
+        "Custom themes here override Streamlit's built-in Light/Dark "
+        "via injected CSS. Pick *Default* to fall back to Streamlit's "
+        "own theme (also configurable in the three-dot menu → Settings)."
+    )
+_apply_theme(theme_choice)
 
 tab_single, tab_portfolio = st.tabs(["Single Ticker", "Portfolio"])
 

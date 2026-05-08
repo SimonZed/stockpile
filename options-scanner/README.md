@@ -6,7 +6,93 @@ Ranked by how much each option's implied volatility sits above a
 fitted volatility surface — the higher the excess, the richer the
 premium relative to the rest of the chain.
 
-## Running
+Three entry points:
+
+- **Web UI** — browser-based, no CLI knowledge required. Recommended.
+- **CLI scanner** — single ticker, scriptable.
+- **Portfolio scanner** — reads a brokerage CSV and scans every open
+  position.
+
+For repo-wide setup (`uv sync`, etc.) see the
+[root README](../README.md#setup).
+
+## Web UI
+
+```bash
+uv run streamlit run options-scanner/run_app.py
+```
+
+A browser tab opens at `http://localhost:8501` with two tabs:
+
+- **Single Ticker** — type a symbol, pick Calls/Puts/Both and Sell/Buy,
+  hit Scan. You get a volatility-surface chart with the top picks
+  highlighted, plus the ranked table below.
+- **Portfolio** — drag in a brokerage CSV (Schwab, Robinhood, Fidelity,
+  or Merrill), pick the brokerage, hit Scan Portfolio. Each position
+  gets its own chart and table in a collapsible section.
+
+Both tabs offer a Download HTML Report button.
+
+### What's actually running at localhost:8501
+
+`streamlit run` starts a local **Uvicorn** web server. The browser
+loads the page over HTTP, then opens a persistent **WebSocket** that
+streams widget changes back to Python; every interaction re-runs
+`run_app.py` top-to-bottom and pushes the new output to the page.
+
+By default Streamlit binds to `0.0.0.0`, so the app is reachable from
+other machines on your network at the "Network URL" Streamlit prints
+(e.g. `http://10.0.0.5:8501`). For solo home use that's harmless. On a
+shared/public network, pass `--server.address 127.0.0.1` to bind only
+to localhost.
+
+To stop the server: `Ctrl+C` in the terminal where you started it.
+There is no in-app shutdown button.
+
+### Common problems
+
+**`Port 8501 is already in use` (or app appears on `:8502`)**
+A previous Streamlit is still running. Stop it with `Ctrl+C` in its
+terminal, or pass `--server.port 9000` to use a different port.
+
+**Browser doesn't open automatically**
+Happens on some Windows setups and over SSH. Just paste the URL the
+terminal printed. Pass `--server.headless true` to suppress the
+auto-open attempt.
+
+**Windows Firewall prompt the first time**
+Allow on Private networks; deny Public.
+
+**First scan takes 5–15 seconds**
+Normal — fetching the chain from Yahoo Finance, fitting the surface,
+looking up earnings. There's a spinner.
+
+**Empty chart on a ticker that worked moments ago**
+Yahoo throttling. The 5-minute cache mitigates repeated scans of the
+same ticker; otherwise wait it out.
+
+**Edited `run_app.py` and the chart still looks wrong**
+Streamlit auto-reloads code, but `@st.cache_data` results survive
+across reruns. Open the hamburger menu (top-right) → **Clear cache** →
+rerun.
+
+**`ModuleNotFoundError` after a `git pull`**
+Dependencies changed. Run `uv sync` from the repo root.
+
+## Portfolio scanner (CLI)
+
+```bash
+uv run options-scanner/run_portfolio.py --csv input/schwab028.csv
+uv run options-scanner/run_portfolio.py --csv input/schwab028.csv \
+    --html --tickers AAPL AMD
+```
+
+Reads the CSV, finds every open stock position, and runs a sell scan
+on each. Positions with an existing covered call get a roll scan
+showing the `NetCr` column instead. Add `--html` for one combined
+report covering the whole account.
+
+## CLI scanner
 
 Always run from the **repo root** using `uv run`:
 
@@ -159,74 +245,9 @@ back the existing position. Positive = net credit roll. The table
 shows only calls (same type as the position being rolled), ranked
 by IV excess so the richest new premium surfaces first.
 
-## TODO
+## Roadmap
 
- - Write a YouTube script
-
-### Plan: portfolio scan (`run_portfolio.py`)
-
-A new entry point that reads a brokerage CSV, finds all open stock
-positions, and auto-generates a scan report for each one.
-
-**Implementation sketch:**
-
-1. Parse CSV using existing `stocks_shared` parsers (Schwab etc.)
-2. For each ticker: count shares held (sum Buy - Sell on Stock rows)
-3. For each ticker with shares > 0: call `detect_open_positions` to
-   find any existing short calls against that position
-4. For **uncovered** tickers (no open call): run a standard sell scan
-   — same as `run_scanner.py TICKER --calls`
-5. For **covered** tickers (has open call): run a roll scan for each
-   open call — same as `run_scanner.py TICKER --roll ...` — showing
-   the NetCr column so the best roll jumps out
-6. Generate one combined HTML report:
-   - Summary table at top: Ticker | Shares | Spot | Status | Open call
-   - One section per ticker with its scan table
-   - Reuses all existing `chain`, `iv_surface`, `earnings`, `report`
-     machinery
-
-**CLI sketch:**
-
-```bash
-uv run options-scanner/run_portfolio.py --csv input/schwab028.csv
-uv run options-scanner/run_portfolio.py --csv input/schwab028.csv \
-    --html --tickers AAPL AMD
-```
-
-**New files needed:**
-- `run_portfolio.py` — thin entry point
-- `src/portfolio.py` — position parsing + per-ticker scan loop
-- extend `src/report.py` — add `save_portfolio_html()`
-
-### Plan: Streamlit web UI (`run_app.py`)
-
-A browser-based UI so no CLI knowledge is needed. One command (or
-a double-clickable `.bat`) starts a local web server and opens the
-tool in the browser.
-
-**Two tabs:**
-
-- **Single Ticker** — form with ticker, Calls/Puts/Both, Sell/Buy
-  toggle, delta slider, DTE range, OI filter. Hit Scan; results
-  appear as an interactive sortable table. Download HTML button
-  generates the report in-browser (no file saved unless wanted).
-
-- **Portfolio** — drag-and-drop the brokerage CSV, pick brokerage,
-  hit Scan. Progress bar while fetching each ticker. Results appear
-  in collapsible sections per position. Download full portfolio
-  HTML report button.
-
-**Why Streamlit:**
-- Pure Python — no HTML/JS needed beyond what already exists
-- Runs locally (no hosting, no account)
-- `@st.cache_data` means re-adjusting filters doesn't re-fetch
-  option chains from Yahoo Finance
-
-**New files needed:**
-- `run_app.py` — Streamlit entry point
-- `pyproject.toml` — add `streamlit` dependency
-
-**To run:**
-```bash
-uv run streamlit run options-scanner/run_app.py
-```
+- Replace Yahoo Finance with Schwab developer API for real-time
+  quotes and proper Greeks (delta/gamma/theta/vega) — currently
+  delta is computed from Black-Scholes using Yahoo's IV, which can
+  be stale on thinly traded strikes.
