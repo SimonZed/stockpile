@@ -247,12 +247,96 @@ back the existing position. Positive = net credit roll. The table
 shows only calls (same type as the position being rolled), ranked
 by IV excess so the richest new premium surfaces first.
 
+## Data sources
+
+The tool currently uses **Yahoo Finance** via `yfinance` — free,
+no account or API key required. Before relying on the output,
+it's worth understanding where that data falls short.
+
+### Yahoo Finance limitations
+
+**Stale implied volatility.** Yahoo returns the IV from the last
+option trade, not a live market-maker quote. On thinly traded
+strikes — common on LEAPS, deep OTM, and low-volume tickers —
+that trade may have happened hours or days ago. Stale IV
+distorts the surface fit, produces false IV+pp signals, and
+makes the Black-Scholes delta unreliable. A lone dot sitting
+far from its neighbors with no obvious reason is almost always
+a stale quote, not a real signal.
+
+**No live bid/ask.** The bid and ask returned are from the last
+market refresh, not a live feed. For actively traded near-term
+options this is usually fine; for LEAPS it can be meaningfully
+wrong. Always check the live spread on your broker before
+placing a trade.
+
+**Greeks not provided.** Yahoo does not return delta, gamma,
+theta, or vega. Delta is computed from Black-Scholes using
+Yahoo's IV — so if the IV is stale, the delta is too.
+
+**Rate limiting.** Yahoo's unofficial API is unauthenticated and
+subject to throttling. Repeated rapid scans can return empty
+results. The scanner caches results for 5 minutes to mitigate
+this.
+
+**Expiration coverage.** Yahoo may not return the full list of
+expirations available at your broker. Some far-dated LEAPS
+expirations can be missing entirely.
+
+**Earnings dates.** Yahoo's earnings calendar is sometimes
+missing, off by a day, or not yet populated for upcoming
+quarters.
+
+### Alternative data sources
+
+These limitations are known, and one or more of the sources
+below will likely be added to the tool soon — better data
+support is on the roadmap and will be a drop-in improvement
+when it lands. In the meantime, the sources below are options
+if you want to explore plugging one in yourself:
+
+### Free with a brokerage account
+
+| Source | Notes |
+|--------|-------|
+| **Schwab** (`schwab-py`) | Real-time, full Greeks, clean REST API. Free for any Schwab account holder. Largest overlap with covered-call sellers. |
+| **Tradier** | Very clean REST/JSON API, excellent docs, free developer sandbox with delayed data, real-time with a funded account. Most developer-friendly broker API available. |
+| **Tastytrade** | Official API, free for account holders. Options-focused, good Greeks. Popular with the theta-gang crowd. |
+| **Interactive Brokers** | Free for account holders via TWS API or newer REST API. Most comprehensive data, but requires their desktop app running as a gateway (`ib_insync` library). |
+| **E\*TRADE** | Official OAuth-based API, free for account holders, decent option chain data with Greeks. |
+
+### Free without an account (limited)
+
+| Source | Notes |
+|--------|-------|
+| **Alpha Vantage** | Free API key, 25 requests/day on free tier. Option chains with some Greeks — workable for single-ticker use, too slow for portfolio scans. |
+| **Polygon.io** | Free tier gives 15-minute delayed data; real-time ~$29/mo. Clean API, strong Python SDK, popular in the algo/quant community. |
+| **Market Data App** | Free tier with options snapshots. Less well-known but solid. |
+
+### Paid
+
+| Source | Notes |
+|--------|-------|
+| **Polygon.io** | ~$29/mo for real-time. Most popular among independent developers. |
+| **EODHD** | ~$20–50/mo, global coverage, options chains with Greeks. |
+| **Intrinio** | Mid-tier pricing, solid quality, good Python SDK. |
+| **CBOE LiveVol** | Professional grade, expensive — overkill for this use case. |
+
+### Practical recommendation
+
+**Tradier** is the easiest next step — the free developer sandbox
+lets you test without an active account, and the REST/JSON
+responses map cleanly onto how `src/chain.py` currently fetches
+data. **Schwab** (`schwab-py`) is the best fit for audience
+overlap since many covered-call sellers already have Schwab
+accounts.
+
 ## Roadmap
 
-- Replace Yahoo Finance with Schwab developer API for real-time
-  quotes and proper Greeks (delta/gamma/theta/vega) — currently
-  delta is computed from Black-Scholes using Yahoo's IV, which can
-  be stale on thinly traded strikes.
+- Replace Yahoo Finance with a better data source (see above) for
+  real-time quotes and proper Greeks — currently delta is computed
+  from Black-Scholes using Yahoo's IV, which can be stale on
+  thinly traded strikes.
 
 ## Disclaimer
 
