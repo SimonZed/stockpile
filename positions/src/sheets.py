@@ -22,20 +22,31 @@ def configure(spreadsheet_id: str, creds_path: Path, token_path: Path) -> None:
 
 def get_service():
     from google.oauth2.credentials import Credentials
+    from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
+
+    def _run_flow():
+        flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_PATH), SCOPES)
+        creds = flow.run_local_server(port=0)
+        TOKEN_PATH.write_text(creds.to_json())
+        return creds
 
     creds = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                TOKEN_PATH.write_text(creds.to_json())
+            except RefreshError:
+                print("  Token expired or revoked — re-authenticating...")
+                TOKEN_PATH.unlink(missing_ok=True)
+                creds = _run_flow()
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_PATH), SCOPES)
-            creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json())
+            creds = _run_flow()
     return build("sheets", "v4", credentials=creds)
 
 
