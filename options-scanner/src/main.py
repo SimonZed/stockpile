@@ -108,6 +108,13 @@ def main() -> None:
         metavar="DIR",
         help="Directory for HTML output (default: options-scanner/output/)",
     )
+    parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        choices=["yahoo", "schwab"],
+        default=None,
+        help="Data source override (default: from config.toml or 'yahoo')",
+    )
 
     args = parser.parse_args()
     ticker = args.ticker.upper()
@@ -117,6 +124,12 @@ def main() -> None:
 
     if args.max_dte is not None and args.max_dte < args.min_dte:
         parser.error("--max-dte must be >= --min-dte")
+
+    # Load config and resolve provider
+    from config import load_config, get_provider, get_schwab_config
+    cfg = load_config()
+    provider = args.data_source or get_provider(cfg)
+    schwab_config = get_schwab_config(cfg)
 
     # Determine which side(s) to fetch
     if args.calls or (args.roll and args.roll_type == "call"):
@@ -133,13 +146,13 @@ def main() -> None:
     from iv_surface import compute_iv_excess
     from earnings import fetch_earnings_dates, annotate_earnings
     from display import print_results
-    from stocks_shared.yahoo import fetch_option_chain
 
     log.info(
-        "Fetching %s chain for %s (DTE %s)...",
+        "Fetching %s chain for %s (DTE %s) via %s...",
         opt_type_fetch,
         ticker,
         f"{args.min_dte}–{args.max_dte}" if args.max_dte else f">= {args.min_dte}",
+        provider,
     )
     try:
         df = fetch_chain(
@@ -147,6 +160,8 @@ def main() -> None:
             opt_type=opt_type_fetch,
             min_dte=args.min_dte,
             max_dte=args.max_dte,
+            provider=provider,
+            schwab_config=schwab_config,
         )
     except ValueError as exc:
         sys.exit(str(exc))
@@ -181,10 +196,29 @@ def main() -> None:
     roll_close_cost: float | None = None
     if args.roll:
         log.info(
-            "Looking up close cost for %s %s $%.0f %s...",
+            "Looking up close cost for %s %s $%.0f %s via %s...",
             ticker, args.roll_type, args.roll_strike, args.roll_expiration,
+            provider,
         )
-        chain = fetch_option_chain(ticker, args.roll_expiration)
+        if provider == "schwab":
+            from stocks_shared.schwab_live import get_client, fetch_option_chain_schwab
+            try:
+                schwab_client = get_client(
+                    schwab_config["app_key"],
+                    schwab_config["app_secret"],
+                    schwab_config["callback_url"],
+                    schwab_config["token_file"],
+                )
+                chain = fetch_option_chain_schwab(
+                    schwab_client, ticker, args.roll_expiration
+                )
+            except ValueError as exc:
+                log.warning("  Schwab roll lookup failed: %s", exc)
+                chain = None
+        else:
+            from stocks_shared.yahoo import fetch_option_chain
+            chain = fetch_option_chain(ticker, args.roll_expiration)
+
         if chain is not None:
             side_df = chain.calls if args.roll_type == "call" else chain.puts
             row = side_df[side_df["strike"] == args.roll_strike]
@@ -216,7 +250,8 @@ def main() -> None:
         action_tag = "buy" if args.buy else "sell"
         type_tag = mode if mode != "both" else "both"
         filename = f"{ticker}_{type_tag}_{action_tag}_{date.today().strftime('%Y%m%d')}.html"
-        output_dir = Path(args.output_dir) if args.output_dir else Path(__file__).parents[1] / "output"
+        output_dir = (Path(args.output_dir) if args.output_dir
+                      else Path(__file__).parents[1] / "output")
         output_path = output_dir / filename
         save_html(
             df,

@@ -1,4 +1,4 @@
-"""Fetch and enrich option chain data from Yahoo Finance."""
+"""Fetch and enrich option chain data."""
 
 import logging
 import math
@@ -43,13 +43,9 @@ def _bs_delta(S: float, K: float, T: float, r: float,
     return _norm_cdf(d1) if opt_type == "call" else _norm_cdf(d1) - 1.0
 
 
-def fetch_chain(ticker: str, opt_type: str = "both",
-                min_dte: int = 365, max_dte: int | None = None) -> pd.DataFrame:
-    """Return enriched DataFrame of options with min_dte <= DTE <= max_dte.
-
-    opt_type: "both", "calls", or "puts"
-    max_dte: upper DTE limit; None = no limit
-    """
+def _fetch_chain_yahoo(ticker: str, opt_type: str = "both",
+                       min_dte: int = 365,
+                       max_dte: int | None = None) -> pd.DataFrame:
     import yfinance as yf
 
     spot = fetch_live_price(ticker)
@@ -108,29 +104,45 @@ def fetch_chain(ticker: str, opt_type: str = "both",
 
                 log_m = math.log(K / spot)
                 delta = _bs_delta(spot, K, T, _RISK_FREE_RATE, iv, side)
-                # Ann yield relative to capital at risk:
-                # calls → vs. stock value; puts → vs. strike (buying obligation)
                 capital = spot if side == "call" else K
                 ann_yield = (mid / capital) * (365.0 / dte) * 100.0
 
                 rows.append({
-                    "type": side,
-                    "strike": K,
-                    "expiration": exp_str,
-                    "dte": dte,
-                    "spot": spot,
+                    "type":          side,
+                    "strike":        K,
+                    "expiration":    exp_str,
+                    "dte":           dte,
+                    "spot":          spot,
                     "log_moneyness": log_m,
-                    "bid": bid,
-                    "ask": ask,
-                    "mid": mid,
-                    "iv": iv,
-                    "iv_fitted": iv,
-                    "iv_excess": 0.0,
-                    "delta": delta,
+                    "bid":           bid,
+                    "ask":           ask,
+                    "mid":           mid,
+                    "iv":            iv,
+                    "iv_fitted":     iv,
+                    "iv_excess":     0.0,
+                    "delta":         delta,
                     "ann_yield_pct": ann_yield,
                     "open_interest": oi,
-                    "volume": volume,
+                    "volume":        volume,
                     "earnings_count": 0,
                 })
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def fetch_chain(ticker: str, opt_type: str = "both",
+                min_dte: int = 365, max_dte: int | None = None,
+                provider: str = "yahoo",
+                schwab_config: dict | None = None) -> pd.DataFrame:
+    """Return enriched DataFrame of options with min_dte <= DTE <= max_dte.
+
+    opt_type: "both", "calls", or "puts"
+    max_dte:  upper DTE limit; None = no limit
+    provider: "yahoo" (default) or "schwab"
+    schwab_config: dict with app_key, app_secret, callback_url, token_file
+    """
+    if provider == "schwab":
+        from schwab_chain import fetch_chain_schwab
+        return fetch_chain_schwab(ticker, opt_type, min_dte, max_dte,
+                                  schwab_config)
+    return _fetch_chain_yahoo(ticker, opt_type, min_dte, max_dte)

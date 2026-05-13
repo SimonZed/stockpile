@@ -193,13 +193,15 @@ def _show_validation(issues: list, row_count: int, parse_error: str | None,
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_and_enrich(ticker: str, opt_type: str, min_dte: int,
-                      max_dte: int | None):
+                      max_dte: int | None, provider: str = "yahoo",
+                      schwab_config: dict | None = None):
     from chain import fetch_chain
     from iv_surface import compute_iv_excess
     from earnings import fetch_earnings_dates, annotate_earnings
     try:
         df = fetch_chain(ticker, opt_type=opt_type, min_dte=min_dte,
-                         max_dte=max_dte)
+                         max_dte=max_dte, provider=provider,
+                         schwab_config=schwab_config)
     except ValueError as exc:
         return pd.DataFrame(), [], str(exc)
     if df.empty:
@@ -211,13 +213,15 @@ def _fetch_and_enrich(ticker: str, opt_type: str, min_dte: int,
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _fetch_position(ticker: str, min_dte: int):
+def _fetch_position(ticker: str, min_dte: int, provider: str = "yahoo",
+                    schwab_config: dict | None = None):
     """Cached per-ticker chain fetch for portfolio tab."""
     from chain import fetch_chain
     from iv_surface import compute_iv_excess
     from earnings import fetch_earnings_dates, annotate_earnings
     try:
-        df = fetch_chain(ticker, opt_type="calls", min_dte=min_dte)
+        df = fetch_chain(ticker, opt_type="calls", min_dte=min_dte,
+                         provider=provider, schwab_config=schwab_config)
     except ValueError as exc:
         return pd.DataFrame(), [], str(exc)
     if df.empty:
@@ -747,7 +751,9 @@ def _tab_single() -> None:
 
         with st.spinner(f"Fetching {ticker_clean} option chain…"):
             df, earnings_dates, err = _fetch_and_enrich(
-                ticker_clean, eff_opt_fetch, int(min_dte), max_dte_arg
+                ticker_clean, eff_opt_fetch, int(min_dte), max_dte_arg,
+                st.session_state.get("data_source", "yahoo"),
+                st.session_state.get("schwab_config"),
             )
 
         if err:
@@ -762,10 +768,28 @@ def _tab_single() -> None:
         # Roll: look up close cost for the existing position
         roll_close_cost = None
         if rolling and roll_strike > 0:
-            from stocks_shared.yahoo import fetch_option_chain
             exp_yf = roll_exp.strftime("%Y-%m-%d")
+            _provider = st.session_state.get("data_source", "yahoo")
+            _scfg = st.session_state.get("schwab_config")
             with st.spinner("Looking up close cost…"):
-                chain = fetch_option_chain(ticker_clean, exp_yf)
+                if _provider == "schwab":
+                    from stocks_shared.schwab_live import (
+                        get_client, fetch_option_chain_schwab
+                    )
+                    try:
+                        _sclient = get_client(
+                            _scfg["app_key"], _scfg["app_secret"],
+                            _scfg["callback_url"], _scfg["token_file"],
+                        )
+                        chain = fetch_option_chain_schwab(
+                            _sclient, ticker_clean, exp_yf
+                        )
+                    except ValueError as exc:
+                        st.warning(f"Schwab roll lookup failed: {exc}")
+                        chain = None
+                else:
+                    from stocks_shared.yahoo import fetch_option_chain
+                    chain = fetch_option_chain(ticker_clean, exp_yf)
             if chain is not None:
                 side_df = chain.calls if roll_type_sel == "call" else chain.puts
                 row = side_df[side_df["strike"] == float(roll_strike)]
@@ -955,7 +979,8 @@ def _tab_portfolio() -> None:
         return
 
     from portfolio import get_portfolio
-    from stocks_shared.yahoo import fetch_option_chain
+    _provider = st.session_state.get("data_source", "yahoo")
+    _scfg = st.session_state.get("schwab_config")
 
     # Write upload to a temp file so the parser can read it
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
@@ -985,14 +1010,32 @@ def _tab_portfolio() -> None:
         progress.progress((i + 1) / len(positions),
                           text=f"Scanning {ticker} ({i+1}/{len(positions)})…")
 
-        df, earnings_dates, err = _fetch_position(ticker, int(port_min_dte))
+        df, earnings_dates, err = _fetch_position(
+            ticker, int(port_min_dte), _provider, _scfg
+        )
 
         # Look up roll close costs for open calls
         roll_close_costs = {}
+        _schwab_client = None
+        if _provider == "schwab" and pos["open_calls"]:
+            from stocks_shared.schwab_live import get_client
+            try:
+                _schwab_client = get_client(
+                    _scfg["app_key"], _scfg["app_secret"],
+                    _scfg["callback_url"], _scfg["token_file"],
+                )
+            except (ValueError, TypeError):
+                pass
+
         for opt in pos["open_calls"]:
             m, d, y = opt["expiration"].split("/")
             exp_yf = f"{y}-{m}-{d}"
-            chain = fetch_option_chain(ticker, exp_yf)
+            if _provider == "schwab" and _schwab_client is not None:
+                from stocks_shared.schwab_live import fetch_option_chain_schwab
+                chain = fetch_option_chain_schwab(_schwab_client, ticker, exp_yf)
+            else:
+                from stocks_shared.yahoo import fetch_option_chain
+                chain = fetch_option_chain(ticker, exp_yf)
             if chain is not None:
                 row = chain.calls[chain.calls["strike"] == float(opt["strike"])]
                 if not row.empty:
@@ -1165,8 +1208,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Hidden-by-default theme switcher (sidebar)
+# Load config once at startup (reads options-scanner/config.toml if present)
+from config import load_config, get_provider, get_schwab_config as _get_schwab_cfg
+_app_cfg = load_config()
+_cfg_provider = get_provider(_app_cfg)
+_cfg_schwab = _get_schwab_cfg(_app_cfg)
+
+# Hidden-by-default sidebar: data source + theme
 with st.sidebar:
+    st.markdown("**Data source**")
+    _source_idx = 0 if _cfg_provider == "yahoo" else 1
+    data_source = st.selectbox(
+        "Data source",
+        ["yahoo", "schwab"],
+        index=_source_idx,
+        key="data_source",
+        label_visibility="collapsed",
+        format_func=lambda s: "Yahoo Finance" if s == "yahoo" else "Schwab (live)",
+    )
+    if data_source == "schwab":
+        st.caption("Real-time quotes and Greeks via the Schwab developer API.")
+    else:
+        st.caption("Delayed quotes via Yahoo Finance (no setup required).")
+
+    # Store schwab_config in session state so cached fetch functions can read it
+    st.session_state["schwab_config"] = _cfg_schwab if data_source == "schwab" else None
+
+    st.divider()
     st.markdown("**Theme**")
     theme_choice = st.radio(
         "Theme",

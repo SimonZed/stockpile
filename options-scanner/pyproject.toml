@@ -9,6 +9,7 @@ dependencies = [
     "streamlit",
     "tabulate",
     "yfinance",
+    "schwab-py",
 ]
 
 [dependency-groups]

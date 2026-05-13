@@ -1,0 +1,21 @@
+# options-scanner/config.toml.example
+#
+# Copy this file to config.toml and fill in your credentials.
+# config.toml is gitignored — never commit credentials.
+#
+# Data source: "yahoo" (default, no setup) or "schwab" (real-time).
+# See SCHWAB_DATA_SOURCE.md for setup instructions.
+
+[data_source]
+provider = "yahoo"  # "yahoo" or "schwab"
+
+# ── Schwab credentials ──────────────────────────────────────────────────────
+# Required only when provider = "schwab".
+# Get app_key and app_secret from developer.schwab.com.
+# Set callback_url to the redirect URI you registered for your app.
+
+[schwab]
+app_key      = "your-app-key-from-developer.schwab.com"
+app_secret   = "your-app-secret"
+callback_url = "https://127.0.0.1:8182/"
+token_file   = "~/.config/schwab-token.json"

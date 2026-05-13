@@ -35,6 +35,16 @@ def _exp_to_yf(exp_str: str) -> str:
     return f"{y}-{m}-{d}"
 
 
+def _fetch_roll_chain(ticker: str, exp_yf: str, provider: str,
+                      schwab_config: dict | None, schwab_client=None):
+    """Fetch single-expiration chain for roll close-cost lookup."""
+    if provider == "schwab":
+        from stocks_shared.schwab_live import fetch_option_chain_schwab
+        return fetch_option_chain_schwab(schwab_client, ticker, exp_yf)
+    from stocks_shared.yahoo import fetch_option_chain
+    return fetch_option_chain(ticker, exp_yf)
+
+
 def get_portfolio(csv_path: str, brokerage: str) -> list[dict]:
     """Return open stock positions with associated open short options.
 
@@ -73,7 +83,8 @@ def get_portfolio(csv_path: str, brokerage: str) -> list[dict]:
 
 
 def scan_position(pos: dict, min_dte: int = 365, min_oi: int = 25,
-                  max_delta: float = 0.70) -> dict:
+                  max_delta: float = 0.70, provider: str = "yahoo",
+                  schwab_config: dict | None = None) -> dict:
     """Fetch call chain and return scan results for one position.
 
     Returns dict: {position, error, df, spot, earnings_dates, roll_close_costs}
@@ -82,14 +93,14 @@ def scan_position(pos: dict, min_dte: int = 365, min_oi: int = 25,
     from chain import fetch_chain
     from iv_surface import compute_iv_excess
     from earnings import fetch_earnings_dates, annotate_earnings
-    from stocks_shared.yahoo import fetch_option_chain
 
     ticker = pos["ticker"]
     empty = {"position": pos, "error": None, "df": pd.DataFrame(),
              "spot": None, "earnings_dates": [], "roll_close_costs": {}}
 
     try:
-        df = fetch_chain(ticker, opt_type="calls", min_dte=min_dte)
+        df = fetch_chain(ticker, opt_type="calls", min_dte=min_dte,
+                         provider=provider, schwab_config=schwab_config)
     except ValueError as exc:
         return {**empty, "error": str(exc)}
 
@@ -103,11 +114,27 @@ def scan_position(pos: dict, min_dte: int = 365, min_oi: int = 25,
     spot = float(df["spot"].iloc[0])
     df = df[df["delta"].abs() <= max_delta].copy()
 
+    # Build Schwab client once for all roll lookups (reuses cached instance)
+    schwab_client = None
+    if provider == "schwab" and pos["open_calls"]:
+        from stocks_shared.schwab_live import get_client
+        cfg = schwab_config or {}
+        try:
+            schwab_client = get_client(
+                cfg.get("app_key", ""),
+                cfg.get("app_secret", ""),
+                cfg.get("callback_url", "https://127.0.0.1:8182/"),
+                cfg.get("token_file", "~/.config/schwab-token.json"),
+            )
+        except ValueError as exc:
+            log.warning("Schwab auth failed for roll lookup: %s", exc)
+
     # Look up close cost (mid) for each open short call
     roll_close_costs = {}
     for opt in pos["open_calls"]:
         exp_yf = _exp_to_yf(opt["expiration"])
-        chain = fetch_option_chain(ticker, exp_yf)
+        chain = _fetch_roll_chain(ticker, exp_yf, provider,
+                                  schwab_config, schwab_client)
         if chain is None:
             continue
         row = chain.calls[chain.calls["strike"] == float(opt["strike"])]
@@ -116,7 +143,9 @@ def scan_position(pos: dict, min_dte: int = 365, min_oi: int = 25,
         bid = float(row["bid"].iloc[0] or 0)
         ask = float(row["ask"].iloc[0] or 0)
         last = float(row["lastPrice"].iloc[0] or 0)
-        roll_close_costs[opt["symbol"]] = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+        roll_close_costs[opt["symbol"]] = (
+            (bid + ask) / 2 if bid > 0 and ask > 0 else last
+        )
 
     return {
         "position": pos,
@@ -150,7 +179,19 @@ def main() -> None:
     parser.add_argument("--html", action="store_true",
                         help="Save a combined HTML portfolio report")
     parser.add_argument("--output-dir", default=None, metavar="DIR")
+    parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        choices=["yahoo", "schwab"],
+        default=None,
+        help="Data source override (default: from config.toml or 'yahoo')",
+    )
     args = parser.parse_args()
+
+    from config import load_config, get_provider, get_schwab_config
+    cfg = load_config()
+    provider = args.data_source or get_provider(cfg)
+    schwab_config = get_schwab_config(cfg)
 
     log.info("Parsing %s (%s)...", args.csv, args.brokerage)
     positions = get_portfolio(args.csv, args.brokerage)
@@ -163,7 +204,10 @@ def main() -> None:
         sys.exit("No open stock positions found.")
 
     print(f"\nFound {len(positions)} position(s): "
-          f"{', '.join(p['ticker'] for p in positions)}\n")
+          f"{', '.join(p['ticker'] for p in positions)}")
+    if provider == "schwab":
+        print("  Data source: Schwab (real-time)")
+    print()
 
     from display import print_results
 
@@ -171,7 +215,8 @@ def main() -> None:
     for i, pos in enumerate(positions):
         ticker = pos["ticker"]
         log.info("Scanning %s (%d/%d)...", ticker, i + 1, len(positions))
-        result = scan_position(pos, args.min_dte, args.min_oi, args.max_delta)
+        result = scan_position(pos, args.min_dte, args.min_oi, args.max_delta,
+                               provider=provider, schwab_config=schwab_config)
         results.append(result)
 
         if result["error"]:
