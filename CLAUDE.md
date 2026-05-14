@@ -62,7 +62,7 @@ uv run options-scanner/run_portfolio.py --csv input/schwab028.csv \
   Yahoo Finance helpers, FIFO analysis, Black-Scholes pricing
 - `positions/` — Google Sheets position tracker
 - `cost-basis-charts/` — cost basis vs. price charts
-- `options-scanner/` — LEAPS scanner (web UI + CLI)
+- `options-scanner/` — options scanner (web UI + CLI)
 - `google-sheets-setup/` — Google Sheets API setup docs
 - `input/` — brokerage CSV exports (gitignored)
 

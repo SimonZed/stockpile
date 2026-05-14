@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Scan a LEAPS option chain (1 year+ DTE) to find overpriced options
+Scan an option chain to find overpriced options
 worth selling: covered calls, cash-secured puts, and roll candidates.
 Ranks by IV excess — how much the option's implied volatility sits
 above a fitted 2-D surface — to surface genuinely rich premium vs.

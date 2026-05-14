@@ -7,7 +7,8 @@ tracker, cost basis charts, and shared parsing/finance utilities.
 > non-commercial use, as-is, with no warranty of any kind. There is
 > no guarantee of accuracy, completeness, or fitness for any particular
 > purpose. All tools rely on third-party data sources (Yahoo Finance,
-> brokerage CSV exports, Google Sheets) whose availability, accuracy,
+> Schwab developer API, brokerage CSV exports, Google Sheets) whose
+> availability, accuracy,
 > and format can change
 > without notice; output quality is limited by what those sources
 > return. Nothing produced by any tool in this repository constitutes
@@ -28,7 +29,7 @@ tracker, cost basis charts, and shared parsing/finance utilities.
 - **[cost-basis-charts](cost-basis-charts/README.md)** — Interactive
   cost basis vs. price charts (YouTube tutorial project)
 - **[options-scanner](options-scanner/README.md)** — Find mispriced
-  LEAPS to sell or buy. Three entry points: a CLI scanner for a single
+  options to sell or buy. Three entry points: a CLI scanner for a single
   ticker, a portfolio scanner that reads a brokerage CSV, and a
   Streamlit web UI. Supports Yahoo Finance (default, no setup) or the
   Schwab developer API (real-time quotes and Greeks)
