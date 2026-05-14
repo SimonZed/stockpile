@@ -20,7 +20,7 @@ charts, and shared parsing/finance utilities.
 - **shared** — pip-installable package (`stocks-shared`): CSV parsers
   (Schwab, Robinhood, Fidelity, Merrill Edge, and the
   [stockpile manual format](docs/stockpile-format.md)), Yahoo Finance
-  helpers, FIFO analysis, Black-Scholes pricing
+  and Schwab live API helpers, FIFO analysis, Black-Scholes pricing
 - **tools** — one-off migration scripts: Schwab→Robinhood CSV
   conversion, Merrill Edge PDF statement extractor
 - **[positions](positions/README.md)** — Google Sheets position tracker
@@ -29,7 +29,8 @@ charts, and shared parsing/finance utilities.
 - **[options-scanner](options-scanner/README.md)** — Find mispriced
   LEAPS to sell or buy. Three entry points: a CLI scanner for a single
   ticker, a portfolio scanner that reads a brokerage CSV, and a
-  Streamlit web UI
+  Streamlit web UI. Supports Yahoo Finance (default, no setup) or the
+  Schwab developer API (real-time quotes and Greeks)
 - **[google-sheets-setup](google-sheets-setup/README.md)** — Google
   Sheets API setup docs
 
@@ -113,8 +114,8 @@ After installation, restart your terminal so `uv` is on your PATH.
 ## How the virtual environment works
 
 This repo uses **uv workspaces**. The root `pyproject.toml` declares
-all three sub-projects (`shared`, `positions`, `cost-basis-charts`) as
-workspace members. When you run `uv sync`, uv:
+all sub-projects (`shared`, `positions`, `cost-basis-charts`,
+`options-scanner`) as workspace members. When you run `uv sync`, uv:
 
 1. Creates a single shared `.venv/` at the repo root
 2. Installs all dependencies for every workspace member into it
@@ -174,13 +175,21 @@ your details:
 # macOS / Linux / Git Bash
 cp cost-basis-charts/config.toml.example cost-basis-charts/config.toml
 cp positions/config.toml.example positions/config.toml
+cp options-scanner/config.toml.example options-scanner/config.toml
 
 # Windows PowerShell or CMD
 copy cost-basis-charts\config.toml.example cost-basis-charts\config.toml
 copy positions\config.toml.example positions\config.toml
+copy options-scanner\config.toml.example options-scanner\config.toml
 ```
 
 See the comments inside each file for what each field means.
+
+The options-scanner config is optional — Yahoo Finance works with no
+configuration. It is only needed to enable the Schwab data source
+(real-time quotes and Greeks). See
+[options-scanner/SCHWAB_DATA_SOURCE.md](options-scanner/SCHWAB_DATA_SOURCE.md)
+for setup instructions.
 
 Place your brokerage CSV exports in `input/` — both tools look there
 by default. The `input/` directory is gitignored so your files stay

@@ -454,6 +454,8 @@ def _show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
         alt.Tooltip("IV+pp:Q",         title="IV excess (pp)", format="+.1f"),
         alt.Tooltip("delta:Q",         format=".2f"),
         alt.Tooltip("open_interest:Q", title="OI"),
+        alt.Tooltip("bid:Q",           title="Bid",  format="$.2f"),
+        alt.Tooltip("ask:Q",           title="Ask",  format="$.2f"),
     ]
 
     fitted_line = alt.Chart(sub).mark_line(
@@ -706,7 +708,7 @@ def _tab_single() -> None:
 
     # ── Group 3: Filters ──────────────────────────────────────────────────────
     with st.container(border=True):
-        n1, n2, n3, _ = st.columns([1, 1, 1, 3], vertical_alignment="bottom")
+        n1, n2, n3, n4 = st.columns([1, 1, 1, 3], vertical_alignment="bottom")
         with n1:
             min_dte = st.number_input("Min DTE", value=365, min_value=1,
                                       key="s_min_dte")
@@ -716,6 +718,14 @@ def _tab_single() -> None:
         with n3:
             min_oi = st.number_input("Min OI", value=25, min_value=0,
                                      key="s_min_oi")
+        with n4:
+            st.markdown(
+                "<p style='text-align:right; color:#f97316; font-size:1.1rem;"
+                " font-weight:600; margin:0; padding-bottom:1rem;'>"
+                "⚠ Best used during market hours —<br>"
+                "pre/post-market data may be stale or missing.</p>",
+                unsafe_allow_html=True,
+            )
 
     # ── Scan row: delta, top n, scan button ───────────────────────────────────
     s1, s2, _, s3 = st.columns([2, 0.8, 1, 1.2], vertical_alignment="bottom")
@@ -1214,24 +1224,49 @@ _app_cfg = load_config()
 _cfg_provider = get_provider(_app_cfg)
 _cfg_schwab = _get_schwab_cfg(_app_cfg)
 
+# Schwab is "configured" when real credentials are present in config.toml
+_schwab_configured = (
+    bool(_cfg_schwab.get("app_key"))
+    and not _cfg_schwab["app_key"].startswith("your-")
+    and bool(_cfg_schwab.get("app_secret"))
+    and not _cfg_schwab["app_secret"].startswith("your-")
+)
+
 # Hidden-by-default sidebar: data source + theme
 with st.sidebar:
     st.markdown("**Data source**")
-    _source_idx = 0 if _cfg_provider == "yahoo" else 1
-    data_source = st.selectbox(
+
+    def _source_label(s: str) -> str:
+        if s == "yahoo":
+            return "Yahoo Finance"
+        return "Schwab (live)" if _schwab_configured else "Schwab (unconfigured)"
+
+    # Only pre-select Schwab if it's actually configured
+    _source_idx = 1 if (_cfg_provider == "schwab" and _schwab_configured) else 0
+    _source_raw = st.selectbox(
         "Data source",
         ["yahoo", "schwab"],
         index=_source_idx,
-        key="data_source",
         label_visibility="collapsed",
-        format_func=lambda s: "Yahoo Finance" if s == "yahoo" else "Schwab (live)",
+        format_func=_source_label,
     )
-    if data_source == "schwab":
+
+    # Effective provider — fall back to yahoo if schwab isn't ready
+    if _source_raw == "schwab" and not _schwab_configured:
+        data_source = "yahoo"
+        st.warning(
+            "Schwab credentials not configured. "
+            "See `SCHWAB_DATA_SOURCE.md` to set up API access.",
+        )
+    elif _source_raw == "schwab":
+        data_source = "schwab"
         st.caption("Real-time quotes and Greeks via the Schwab developer API.")
     else:
+        data_source = "yahoo"
         st.caption("Delayed quotes via Yahoo Finance (no setup required).")
 
-    # Store schwab_config in session state so cached fetch functions can read it
+    # Publish effective provider + config for fetch functions
+    st.session_state["data_source"] = data_source
     st.session_state["schwab_config"] = _cfg_schwab if data_source == "schwab" else None
 
     st.divider()

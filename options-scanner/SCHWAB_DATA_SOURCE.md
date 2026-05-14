@@ -30,7 +30,9 @@ provider = "schwab"
 
 [schwab]
 app_key      = "your-app-key"
+
 app_secret   = "your-app-secret"
+
 callback_url = "https://127.0.0.1:8182/"
 token_file   = "~/.config/schwab-token.json"
 ```
@@ -85,6 +87,13 @@ dropdown. The default is read from `config.toml`.
 Earnings dates always come from Yahoo Finance — the Schwab API does
 not provide this data. Everything else (chain, prices, roll close cost)
 uses the selected provider.
+
+## Setup experience notes
+
+<!-- TODO: fill in your firsthand experience setting up the Schwab
+developer account and OAuth flow — gotchas, timing quirks, portal
+navigation, anything that would help someone going through it for
+the first time. -->
 
 ## Architecture
 

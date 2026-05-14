@@ -113,7 +113,7 @@ uv run options-scanner/run_scanner.py AMD
 
 # Narrow to a delta range (e.g. 0.20–0.45 sweet spot)
 uv run options-scanner/run_scanner.py AMD --calls \
-    --delta-min 0.20 --delta-max 0.45
+    --min-delta 0.20 --max-delta 0.45
 
 # Roll an existing short call
 uv run options-scanner/run_scanner.py AMD --roll \
@@ -129,12 +129,13 @@ uv run options-scanner/run_scanner.py AMD --roll \
 | `--min-dte` | 365 | Minimum days to expiration |
 | `--max-dte` | none | Maximum days to expiration |
 | `--min-oi` | 25 | Minimum open interest |
-| `--delta-min` | 0.10 | Exclude abs(delta) below this |
-| `--delta-max` | 0.75 | Exclude abs(delta) above this |
+| `--min-delta` | 0.10 | Exclude abs(delta) below this |
+| `--max-delta` | 0.75 | Exclude abs(delta) above this |
 | `--top` | 10 | Max rows shown in terminal |
 | `--html` | off | Save an HTML report (see below) |
 | `--output-dir` | `options-scanner/output/` | Directory for HTML files |
 | `--roll` | — | Roll mode (requires `--type`, `--strike`, `--expiration`) |
+| `--data-source` | from config | `yahoo` or `schwab` — overrides config.toml |
 
 ### HTML report
 
@@ -252,9 +253,20 @@ by IV excess so the richest new premium surfaces first.
 
 ## Data sources
 
-The tool currently uses **Yahoo Finance** via `yfinance` — free,
-no account or API key required. Before relying on the output,
-it's worth understanding where that data falls short.
+The tool supports two data sources, selectable via `config.toml`,
+the `--data-source` CLI flag, or the sidebar dropdown in the web UI:
+
+| Source | Setup | Data quality |
+|--------|-------|-------------|
+| **Yahoo Finance** (default) | None — works out of the box | Delayed IV, no live Greeks |
+| **Schwab** | Free Schwab developer account; see [SCHWAB_DATA_SOURCE.md](SCHWAB_DATA_SOURCE.md) | Real-time quotes, actual Greeks |
+
+When using Schwab, delta comes directly from Schwab's model rather
+than being estimated via Black-Scholes from stale IV. Earnings dates
+still come from Yahoo Finance — the Schwab API does not provide them.
+
+Before relying on Yahoo Finance output, it's worth understanding
+where that data falls short.
 
 ### Yahoo Finance limitations
 
@@ -327,19 +339,22 @@ if you want to explore plugging one in yourself:
 
 ### Practical recommendation
 
-**Tradier** is the easiest next step — the free developer sandbox
-lets you test without an active account, and the REST/JSON
-responses map cleanly onto how `src/chain.py` currently fetches
-data. **Schwab** (`schwab-py`) is the best fit for audience
-overlap since many covered-call sellers already have Schwab
-accounts.
+**Schwab** (`schwab-py`) is now supported — see
+[SCHWAB_DATA_SOURCE.md](SCHWAB_DATA_SOURCE.md) to enable it.
+**Tradier** is the easiest next step for a second alternative — the
+free developer sandbox lets you test without an active account, and
+the REST/JSON responses map cleanly onto how `src/chain.py` fetches
+data.
 
 ## Roadmap
 
-- Replace Yahoo Finance with a better data source (see above) for
-  real-time quotes and proper Greeks — currently delta is computed
-  from Black-Scholes using Yahoo's IV, which can be stale on
-  thinly traded strikes.
+Planned improvements, roughly in priority order:
+
+- **GEX (Gamma Exposure)** — aggregate dealer gamma by strike,
+  showing where market-maker hedging creates price walls or
+  amplification zones. Inputs (gamma, OI, spot) are already
+  available from the option chain; the main open question is
+  where it fits best in the UI.
 
 ## Disclaimer
 
@@ -347,13 +362,13 @@ This software is provided free of charge, as-is, with no warranty
 of any kind. There is no guarantee of accuracy, completeness, or
 fitness for any particular purpose.
 
-All data is sourced from Yahoo Finance's public API. The quality
-and timeliness of the output is entirely dependent on what Yahoo
-Finance returns. Implied volatility figures can be stale,
+Data is sourced from Yahoo Finance or the Schwab developer API
+depending on your configuration. Output quality is limited by what
+those sources return. Implied volatility figures can be stale,
 especially on thinly traded strikes; bid/ask spreads on LEAPS can
-be wide; and data may occasionally be missing or incorrect.
-Nothing this tool produces should be taken as a guarantee of any
-particular result.
+be wide; and data may occasionally be missing or incorrect. Nothing
+this tool produces should be taken as a guarantee of any particular
+result.
 
 This is not financial advice. Options trading involves substantial
 risk of loss and is not appropriate for all investors. Do your own
