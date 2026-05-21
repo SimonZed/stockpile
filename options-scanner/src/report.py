@@ -306,6 +306,7 @@ def render_portfolio_html(
     csv_name: str,
     min_oi: int,
     top_n: int,
+    min_vol: int = 0,
 ) -> str:
     """Return a combined portfolio HTML report as a string."""
     today = date.today()
@@ -363,7 +364,8 @@ def render_portfolio_html(
         else:
             spot = res["spot"]
             earnings_dates = res["earnings_dates"]
-            df = res["df"][res["df"]["open_interest"] >= min_oi].copy()
+            df = res["df"][(res["df"]["open_interest"] >= min_oi)
+                           & (res["df"]["volume"] >= min_vol)].copy()
 
             earn_str = ""
             if earnings_dates:
@@ -463,8 +465,9 @@ def save_portfolio_html(
     output_path: Path,
     min_oi: int,
     top_n: int,
+    min_vol: int = 0,
 ) -> None:
-    html = render_portfolio_html(results, csv_name, min_oi, top_n)
+    html = render_portfolio_html(results, csv_name, min_oi, top_n, min_vol)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
     log.info("Portfolio HTML report saved: %s", output_path)

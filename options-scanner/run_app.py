@@ -1582,7 +1582,7 @@ def _tab_portfolio() -> None:
         unsafe_allow_html=True,
     )
 
-    pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+    pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2, 1, 1, 1, 2, 1])
     with pc1:
         brokerage = st.selectbox(
             "Format",
@@ -1599,9 +1599,12 @@ def _tab_portfolio() -> None:
         port_min_oi = st.number_input("Min OI", value=25, min_value=0,
                                       key="p_min_oi")
     with pc4:
+        port_min_vol = st.number_input("Min Vol", value=1, min_value=0,
+                                       key="p_min_vol")
+    with pc5:
         port_delta_range = st.slider("Delta Range", 0.0, 1.0, (0.10, 0.70),
                                      0.05, key="p_delta")
-    with pc5:
+    with pc6:
         port_top = st.number_input("Top N per ticker", value=5, min_value=1,
                                    key="p_top")
 
@@ -1790,16 +1793,19 @@ def _tab_portfolio() -> None:
 
             _show_iv_chart(df_filt, spot, "call",
                            int(port_min_oi), int(port_top), False,
-                           ticker=ticker, key_prefix=f"p_{ticker}")
+                           ticker=ticker, key_prefix=f"p_{ticker}",
+                           min_vol=int(port_min_vol))
 
             st.markdown("**Top candidates**")
             _show_scan_results(df_filt, "call", False, roll_close,
-                               int(port_min_oi), int(port_top))
+                               int(port_min_oi), int(port_top),
+                               int(port_min_vol))
 
     # Portfolio HTML download
     from report import render_portfolio_html
     port_html = render_portfolio_html(
-        results, uploaded_name, int(port_min_oi), int(port_top)
+        results, uploaded_name, int(port_min_oi), int(port_top),
+        int(port_min_vol),
     )
     st.download_button(
         "⬇ Download Portfolio Report",
@@ -2619,7 +2625,13 @@ with st.sidebar:
     )
     section_header(
         title="Stockpile",
-        subtitle="Options analytics for the patient seller.",
+        subtitle=(
+            "Options Analytics made for:<br>"
+            "• Income generation<br>"
+            "• Directional bets<br>"
+            "• Defined-risk spreads<br>"
+            "• GEX analysis"
+        ),
     )
     st.markdown("---")
     section_header("Data source", eyebrow="ACTIVE PROVIDER")
