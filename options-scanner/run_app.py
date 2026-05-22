@@ -31,6 +31,7 @@ from ui_theme import (
     section_header,
     wordmark,
 )
+from mc_ui import LegSpec, position_from_chain_row, position_from_legs, render_mc_panel
 
 _FAVICON_PATH = Path(__file__).parent / "assets" / "favicon.png"
 st.set_page_config(
@@ -246,6 +247,36 @@ _IVPP_HELP = ("Percentage points the option's IV sits above the fitted"
               " volatility surface. Positive = richer than peers at a"
               " similar strike and DTE. Under ~3 pp is noise; 5+ pp is"
               " a genuine signal.")
+
+
+def _ivpp_help_for(buy: bool, opt_type: str = "option") -> str:
+    """Tooltip text for the IV+pp column, tailored to the user's scan.
+
+    The number's sign is interpreted opposite for sellers vs buyers — a
+    +5 pp call is great if you're SELLING it (rich premium collected)
+    and bad if you're BUYING it (overpaying). The tooltip switches
+    accordingly so the user doesn't have to remember the convention.
+    """
+    plural = {"call": "calls", "put": "puts", "both": "options"}.get(
+        opt_type.lower(), "options"
+    )
+    if buy:
+        # Buyer wants cheap → negative IV+pp.
+        return (
+            f"Percentage points the option's IV sits ABOVE (+) or BELOW (−)"
+            f" the fitted volatility surface. You're BUYING {plural} — you want"
+            f" NEGATIVE values (the option is cheap relative to its peers, so"
+            f" you pay less than fair). Look for −3 pp or lower; near 0 is"
+            f" fair value; positive means you'd be overpaying."
+        )
+    # Seller wants rich → positive IV+pp.
+    return (
+        f"Percentage points the option's IV sits ABOVE (+) or BELOW (−)"
+        f" the fitted volatility surface. You're SELLING {plural} — you want"
+        f" POSITIVE values (the option is rich relative to its peers, so you"
+        f" collect more than fair). Look for +5 pp or higher; under +3 pp is"
+        f" noise; negative means the chain isn't paying a premium."
+    )
 _VOL_HELP  = "Yellow: fewer than 4 contracts traded today — very thin activity."
 
 
@@ -422,7 +453,8 @@ def _spot_help_text(meta: dict) -> str:
 
 
 def _show_df(sub: pd.DataFrame, roll_close_cost: float | None = None,
-             min_oi: int = 0, min_vol: int = 0) -> None:
+             min_oi: int = 0, min_vol: int = 0,
+             buy: bool = False, opt_type: str = "option") -> None:
     if sub.empty:
         empty_state(
             "No matches in this chain",
@@ -477,7 +509,8 @@ def _show_df(sub: pd.DataFrame, roll_close_cost: float | None = None,
         "IV%":   st.column_config.NumberColumn("IV%", format="%.1f%%",
                                                width=70),
         "IV+pp": st.column_config.NumberColumn("IV+pp", format="%+.1f pp",
-                                               width=75, help=_IVPP_HELP),
+                                               width=75,
+                                               help=_ivpp_help_for(buy, opt_type)),
         "Delta": st.column_config.NumberColumn("Delta", format="%.2f",
                                                width=60),
         "Ann%":  st.column_config.NumberColumn("Ann%", format="%.1f%%",
@@ -824,7 +857,8 @@ def _show_chain_table(df_exp: pd.DataFrame, buy: bool, mode: str,
         "IV%":   st.column_config.NumberColumn("IV%", format="%.1f%%",
                                                width=70),
         "IV+pp": st.column_config.NumberColumn("IV+pp", format="%+.1f pp",
-                                               width=75, help=_IVPP_HELP),
+                                               width=75,
+                                               help=_ivpp_help_for(buy, mode)),
         "Delta": st.column_config.NumberColumn("Delta", format="%.2f",
                                                width=60),
         "Ann%":  st.column_config.NumberColumn("Ann%", format="%.1f%%",
@@ -1013,10 +1047,124 @@ def _show_scan_results(df: pd.DataFrame, mode: str, buy: bool,
                   & (sub["volume"] >= min_vol)].head(top_n)
         if len(to_show) > 1:
             st.subheader(type_labels[opt_type])
-        _show_df(sub, roll_close_cost, min_oi, min_vol)
+        _show_df(sub, roll_close_cost, min_oi, min_vol,
+                 buy=buy, opt_type=opt_type)
 
 
 # ── Tab: Single Ticker ───────────────────────────────────────────────────────
+
+_OUTLOOK_TABLE: dict[tuple[bool, str], dict[str, str]] = {
+    # (buy?, opt_type) -> {stance, tone, summary, examples}
+    # 'tone' picks the accent color: pos = green, neg = red, neutral = amber, vol = purple
+    (False, "Calls"): {
+        "stance": "Bearish / neutral-down",
+        "tone": "neg",
+        "summary": "Collect premium on calls you expect to expire worthless. "
+                   "Profits if the underlying stays below the strike — the "
+                   "classic 'covered call' or 'short call' setup. IV-rich "
+                   "premium boosts the credit you receive.",
+        "examples": "Covered call · Short call · Credit call spread",
+    },
+    (False, "Puts"): {
+        "stance": "Bullish / neutral-up",
+        "tone": "pos",
+        "summary": "Collect premium on puts you expect to expire worthless. "
+                   "Profits if the underlying stays above the strike. The "
+                   "'cash-secured put' is the bullish income trade — you're "
+                   "paid to wait for a price you'd be happy to buy at.",
+        "examples": "Cash-secured put · Short put · Credit put spread",
+    },
+    (False, "Both"): {
+        "stance": "Range-bound (short volatility)",
+        "tone": "neutral",
+        "summary": "Sell premium on both sides because you expect the "
+                   "underlying to stay inside a range. Profits if IV "
+                   "contracts AND the move is small. Beware of binary "
+                   "events (earnings, FDA) that can crush range-bound bets.",
+        "examples": "Iron condor · Short strangle · Short straddle",
+    },
+    (True, "Calls"): {
+        "stance": "Bullish",
+        "tone": "pos",
+        "summary": "Pay premium for upside leverage. Profits if the "
+                   "underlying rises enough to cover the debit. IV-cheap "
+                   "candidates give you a better entry point because you "
+                   "buy when volatility is under-priced.",
+        "examples": "Long call · Debit call spread · Diagonal / PMCC",
+    },
+    (True, "Puts"): {
+        "stance": "Bearish",
+        "tone": "neg",
+        "summary": "Pay premium for downside exposure. Profits if the "
+                   "underlying falls enough to cover the debit. IV-cheap "
+                   "candidates make the directional bet more efficient "
+                   "because vol isn't already priced in.",
+        "examples": "Long put · Debit put spread · Protective put",
+    },
+    (True, "Both"): {
+        "stance": "Volatility expansion (long vol)",
+        "tone": "vol",
+        "summary": "Pay premium for a big move in either direction. "
+                   "Profits if realized vol exceeds implied vol OR if IV "
+                   "expands. Best entered when IV is low AND a catalyst "
+                   "is approaching (earnings, FDA). Beware vol crush.",
+        "examples": "Long straddle · Long strangle · Calendar spread",
+    },
+}
+
+
+_OUTLOOK_TONE_HEX = {
+    "pos":     "#059669",   # green — success
+    "neg":     "#DC2626",   # red — destructive
+    "neutral": "#D97706",   # amber — accent
+    "vol":     "#8B5CF6",   # purple — vol expansion
+}
+
+
+def _render_outlook_card(buy: bool, opt_type: str) -> None:
+    """Render the directional-outlook callout for the Single Ticker tab.
+
+    Maps the user's (Direction × Option Type) selection to a structured
+    market-view summary so users know what the scan is actually screening
+    for. Renders as a small card in the third column of Group 2.
+    """
+    cfg = _OUTLOOK_TABLE.get((buy, opt_type))
+    if not cfg:
+        return
+    accent = _OUTLOOK_TONE_HEX[cfg["tone"]]
+    st.html(
+        f"""
+        <div style="
+            border-left: 3px solid {accent};
+            background: rgba(255,255,255,0.6);
+            border-radius: 6px;
+            padding: 0.5rem 0.7rem;
+            font-family: var(--osc-font), -apple-system, sans-serif;
+            line-height: 1.45;
+            color: var(--osc-ink-1);
+            height: 100%;
+        ">
+            <div style="font-size: 0.65rem; font-weight: 700;
+                        text-transform: uppercase; letter-spacing: 0.08em;
+                        color: var(--osc-ink-4); margin-bottom: 2px;">
+                Market view
+            </div>
+            <div style="font-size: 0.92rem; font-weight: 600;
+                        color: {accent}; margin-bottom: 4px;">
+                {cfg['stance']}
+            </div>
+            <div style="font-size: 0.78rem; color: var(--osc-ink-2);
+                        margin-bottom: 4px;">
+                {cfg['summary']}
+            </div>
+            <div style="font-size: 0.7rem; font-weight: 500;
+                        color: var(--osc-ink-3); font-style: italic;">
+                e.g. {cfg['examples']}
+            </div>
+        </div>
+        """
+    )
+
 
 def _tab_single() -> None:
     # ── Group 1: Ticker + flow ────────────────────────────────────────────────
@@ -1054,7 +1202,7 @@ def _tab_single() -> None:
             with rc3:
                 roll_exp = st.date_input("Current expiration", key="s_roll_exp")
         else:
-            a1, a2, _ = st.columns([2.2, 1.8, 2])
+            a1, a2, a3 = st.columns([2.2, 1.8, 3.0])
             with a1:
                 action = st.radio(
                     "Direction",
@@ -1067,6 +1215,8 @@ def _tab_single() -> None:
                 option_type = st.radio("Option Type",
                                        ["Calls", "Puts", "Both"],
                                        horizontal=True, key="s_opt_type")
+            with a3:
+                _render_outlook_card(buy, option_type)
 
     # ── Group 3: Filters ──────────────────────────────────────────────────────
     with st.container(border=True):
@@ -1333,6 +1483,137 @@ def _tab_single() -> None:
     _show_scan_results(df_filt, mode_r, buy_r, rcc,
                        res["min_oi"], res["top_n"],
                        res.get("min_vol", 0))
+
+    # ── Monte Carlo trade analyzer ────────────────────────────────────────
+    # Pick any candidate from the ranked table above and simulate its
+    # full P&L distribution. Engine: 10k GBM paths with optional
+    # earnings jumps. Pure NumPy — sub-second for typical 30-90 DTE.
+    section_header(
+        "Monte Carlo Trade Analyzer",
+        eyebrow="DECISION SUPPORT",
+        subtitle="Simulate the P&L distribution of any contract above. "
+                 "P(profit), expected value, worst-5% CVaR, breakeven move.",
+    )
+    if df_filt.empty:
+        empty_state(
+            title="Nothing to analyze",
+            subtitle="Run a scan to populate the candidate table, then pick "
+                     "a row to simulate.",
+        )
+    else:
+        # Apply the EXACT same filters and ranking the "Top candidates"
+        # table uses, so the MC dropdown order matches the table order
+        # row-for-row. _show_scan_results does:
+        #   1. filter to opt_type (or both)
+        #   2. require open_interest >= min_oi AND volume >= min_vol
+        #   3. sort by iv_excess (asc if buy / desc if sell), OI tie-break
+        #   4. head(top_n)
+        # Without these filters, the auto-filled top row could be a
+        # low-liquidity option the table itself hides.
+        if mode_r in ("call", "put"):
+            df_mc_base = df_filt[df_filt["type"] == mode_r]
+        else:
+            df_mc_base = df_filt
+        df_mc = (
+            df_mc_base[
+                (df_mc_base["open_interest"] >= res["min_oi"])
+                & (df_mc_base["volume"] >= res.get("min_vol", 0))
+            ]
+            .sort_values(
+                ["iv_excess", "open_interest"],
+                ascending=[buy_r, False],
+            )
+            .head(res["top_n"])
+            .reset_index(drop=True)
+            .copy()
+        )
+        # The first row is now exactly rank-1 from
+        # "Top candidates — all chains" for the current scan direction.
+        df_mc["_label"] = (
+            df_mc.apply(lambda r: (
+                f"{r.get('type', mode_r).upper()[0]}  "
+                f"${r['strike']:>7.2f}  "
+                f"exp {pd.to_datetime(r['expiration']).strftime('%b %d %y')}  "
+                f"·  mid ${r.get('mid', 0):.2f}"
+                f"  ·  IV {r.get('iv', 0) * 100:.0f}%"
+                f"  ·  IV+pp {r.get('iv_excess', 0) * 100:+.1f}"
+            ), axis=1)
+        )
+        # Empty after filters → nothing to analyze. Surface the reason
+        # explicitly rather than render an empty dropdown.
+        if df_mc.empty:
+            empty_state(
+                title="No candidates pass the table's filters",
+                subtitle="Top candidates is empty for this ticker — relax "
+                         "Min OI / Min Vol on the scan, or pick a ticker "
+                         "with more option-chain liquidity.",
+            )
+            return
+        # Mark the best one so the user knows the default isn't arbitrary.
+        best_signal = df_mc.iloc[0]["iv_excess"] * 100
+        best_label = df_mc.iloc[0]["_label"]
+        arrow = "▼" if buy_r else "▲"
+        st.caption(
+            f"**Strongest signal (rank-1 from Top candidates):** {arrow} {best_label}  "
+            f"(IV+pp {best_signal:+.1f}, pre-selected below)"
+        )
+
+        # Side defaults from scan direction (buy=long, sell=short).
+        c_pick, c_side, c_qty, c_btn = st.columns([4, 1.2, 0.8, 1])
+        with c_pick:
+            choice_idx = st.selectbox(
+                "Candidate to analyze",
+                df_mc.index,
+                index=0,  # auto-fill: strongest-signal row from the sort above
+                format_func=lambda i: df_mc.at[i, "_label"],
+                key="s_mc_choice",
+            )
+        with c_side:
+            side = st.radio(
+                "Side", ["long", "short"],
+                index=0 if buy_r else 1,
+                horizontal=True, key="s_mc_side",
+            )
+        with c_qty:
+            qty = st.number_input("Contracts", value=1, min_value=1,
+                                  max_value=100, step=1, key="s_mc_qty")
+        with c_btn:
+            st.write("")  # vertical-align nudge
+            run_mc = st.button("Run MC", type="primary", key="s_mc_run")
+
+        # Persist the trigger across reruns so the panel stays expanded.
+        if run_mc:
+            st.session_state["s_mc_armed"] = True
+
+        if st.session_state.get("s_mc_armed", False) and choice_idx is not None:
+            picked = df_mc.loc[choice_idx]
+            opt_type = str(picked.get("type", "call")).lower()
+            opt_type = "call" if opt_type.startswith("c") else "put"
+            try:
+                position = position_from_chain_row(
+                    underlying=ticker_r,
+                    spot=spot,
+                    row={
+                        "Strike": picked["strike"],
+                        "Expiration": picked["expiration"],
+                        "Mid": picked.get("mid", picked.get("ask", 0)),
+                        "IV%": picked.get("iv", 0) * 100,
+                    },
+                    side=side,  # type: ignore[arg-type]
+                    opt_type=opt_type,  # type: ignore[arg-type]
+                    qty=int(qty),
+                    earnings_dates=tuple(ed) if ed else (),
+                    risk_free_rate=0.045,
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Couldn't build position from this row: {exc}")
+            else:
+                render_mc_panel(
+                    position,
+                    key=f"s_mc_panel_{choice_idx}_{side}_{qty}",
+                    label=f"{ticker_r} {opt_type.upper()} ${picked['strike']:.0f} "
+                          f"exp {pd.to_datetime(picked['expiration']).strftime('%b %d %y')}",
+                )
 
     from report import render_html
     html = render_html(df_filt, ticker_r, spot, ed, mode_r, buy_r, rcc,
@@ -1705,6 +1986,125 @@ def _tab_gex() -> None:
 
 # ── Tab: Portfolio ───────────────────────────────────────────────────────────
 
+
+def _render_portfolio_action_card(
+    ticker: str,
+    df_filt: pd.DataFrame,
+    spot: float,
+    shares: int,
+    covered: bool,
+    roll_close: float | None,
+    open_calls: list[dict],
+    min_oi: int,
+    min_vol: int,
+) -> None:
+    """Translate the top IV-rich candidate into an explicit buy/sell action.
+
+    The Portfolio table shows raw option data — this card surfaces the
+    'so what should I do?' answer with strike, premium, cash flow, and
+    breakeven math computed against the user's actual share count.
+
+    Covered (existing short call) → ROLL: buy back the open call, sell
+    the new top pick, show net credit/debit + new breakeven.
+
+    Uncovered (just stock) → SELL TO OPEN: write covered calls. Number
+    of contracts is auto-sized to the user's share count (shares // 100).
+    """
+    # Pick the same #1 row the ranked table picks: IV-rich (descending
+    # iv_excess) with open_interest tie-break.
+    eligible = df_filt[
+        (df_filt["type"] == "call")
+        & (df_filt["open_interest"] >= min_oi)
+        & (df_filt["volume"] >= min_vol)
+    ]
+    if eligible.empty:
+        return
+    pick = (
+        eligible.sort_values(["iv_excess", "open_interest"],
+                             ascending=[False, False])
+        .iloc[0]
+    )
+    strike = float(pick["strike"])
+    expiry = pd.to_datetime(pick["expiration"]).strftime("%b %d '%y")
+    mid = float(pick["mid"])
+    iv_excess_pp = float(pick["iv_excess"]) * 100.0
+    delta = float(pick.get("delta", 0.0))
+    max_contracts = max(1, shares // 100)
+
+    accent = _OUTLOOK_TONE_HEX["pos"]   # green — premium income
+
+    if covered and roll_close is not None and open_calls:
+        # ── ROLL action ───────────────────────────────────────────────
+        existing = open_calls[0]
+        net_cr_per_contract = (mid - roll_close) * 100.0
+        net_cr_total = net_cr_per_contract * existing["contracts"]
+        sign = "+" if net_cr_per_contract >= 0 else "−"
+        action_label = "ROLL existing covered call"
+        action_lines = [
+            f"<b>1) Buy to close</b> {existing['contracts']}× <code>{existing['symbol']}</code> at mid ~${roll_close:.2f} → pay <b>${roll_close * 100 * existing['contracts']:,.0f}</b>",
+            f"<b>2) Sell to open</b> {existing['contracts']}× <code>{ticker} ${strike:.0f}C exp {expiry}</code> at mid ~${mid:.2f} → collect <b>${mid * 100 * existing['contracts']:,.0f}</b>",
+            f"<b>Net result:</b> {sign}${abs(net_cr_total):,.0f} ({sign}${abs(net_cr_per_contract):.2f}/contract)",
+        ]
+        breakeven_line = f"<b>New breakeven (stock):</b> ${strike + (mid - roll_close):.2f} — below this the roll costs you net"
+    else:
+        # ── SELL TO OPEN (covered call) ───────────────────────────────
+        if shares < 100:
+            action_label = "Stock position too small for covered call"
+            action_lines = [
+                f"You hold <b>{shares}</b> shares — a covered call requires at least 100 shares per contract.",
+                f"Top IV-rich call for reference: <code>{ticker} ${strike:.0f}C exp {expiry}</code> at mid ~${mid:.2f}",
+            ]
+            breakeven_line = ""
+            accent = _OUTLOOK_TONE_HEX["neutral"]   # amber — informational, not actionable
+        else:
+            premium_per_contract = mid * 100.0
+            premium_total = premium_per_contract * max_contracts
+            max_profit_per_share = max(0.0, strike - spot) + mid
+            max_profit_total = max_profit_per_share * 100 * max_contracts
+            assign_prob = abs(delta) * 100.0
+            action_label = "SELL TO OPEN covered call"
+            action_lines = [
+                f"<b>Action:</b> Sell {max_contracts}× <code>{ticker} ${strike:.0f}C exp {expiry}</code> to open at mid ~${mid:.2f}",
+                f"<b>Premium collected:</b> ${premium_total:,.0f} ({max_contracts} contract(s) × ${premium_per_contract:,.0f})",
+                f"<b>Max profit if assigned at ${strike:.0f}:</b> ${max_profit_total:,.0f} (capped — your stock gets called away)",
+                f"<b>Assignment probability:</b> ~{assign_prob:.0f}% (Δ proxy)",
+            ]
+            breakeven_line = f"<b>Breakeven (stock):</b> ${spot - mid:.2f} — covered down to this price by the premium received"
+
+    lines_html = "".join(f"<li style='margin: 3px 0;'>{l}</li>" for l in action_lines)
+    be_html = (f"<div style='margin-top: 6px; font-size: 0.78rem; "
+               f"color: var(--osc-ink-3);'>{breakeven_line}</div>"
+               if breakeven_line else "")
+    st.html(
+        f"""
+        <div style="
+            border-left: 4px solid {accent};
+            background: rgba(255,255,255,0.7);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            margin: 0.6rem 0;
+            font-family: var(--osc-font), -apple-system, sans-serif;
+            line-height: 1.5;
+        ">
+            <div style="font-size: 0.65rem; font-weight: 700;
+                        text-transform: uppercase; letter-spacing: 0.08em;
+                        color: var(--osc-ink-4); margin-bottom: 2px;">
+                Recommended action · top IV+pp signal ({iv_excess_pp:+.1f} pp)
+            </div>
+            <div style="font-size: 1rem; font-weight: 700; color: {accent};
+                        margin-bottom: 6px;">
+                {action_label}
+            </div>
+            <ul style="margin: 0; padding-left: 1.1rem; font-size: 0.85rem;
+                       color: var(--osc-ink-1);">
+                {lines_html}
+            </ul>
+            {be_html}
+        </div>
+        """
+    )
+
+
 def _tab_portfolio() -> None:
     section_header(
         title="Portfolio scan",
@@ -1936,6 +2336,21 @@ def _tab_portfolio() -> None:
             df_filt = df[df["delta"].abs().between(
                 port_delta_min, port_delta_max)].copy()
 
+            # Explicit action card BEFORE the chart — answers "what should
+            # I actually do?" with the rank-1 candidate spelled out in
+            # buy-to-close / sell-to-open language.
+            _render_portfolio_action_card(
+                ticker=ticker,
+                df_filt=df_filt,
+                spot=spot,
+                shares=int(pos["shares"]),
+                covered=covered,
+                roll_close=roll_close,
+                open_calls=pos["open_calls"],
+                min_oi=int(port_min_oi),
+                min_vol=int(port_min_vol),
+            )
+
             _show_iv_chart(df_filt, spot, "call",
                            int(port_min_oi), int(port_top), False,
                            ticker=ticker, key_prefix=f"p_{ticker}",
@@ -2056,7 +2471,7 @@ def _show_payoff_chart(row: pd.Series, spot: float) -> None:
 
 
 def _show_spreads_table(sub: pd.DataFrame, strategy_name: str,
-                        spot: float) -> int | None:
+                        spot: float, key_prefix: str = "sp") -> int | None:
     """Render the ranked spread table. Returns the selected row index or None."""
     if sub.empty:
         st.info(f"No {strategy_name} spreads found matching the filters.")
@@ -2155,8 +2570,15 @@ def _show_spreads_table(sub: pd.DataFrame, strategy_name: str,
                                                      help=_GREEK_HELP["θ"]),
         "ν":          st.column_config.NumberColumn("ν", format="%.3f", width="small",
                                                      help=_GREEK_HELP["ν"]),
-        "IV+pp":      st.column_config.NumberColumn("IV+pp", format="%+.1f pp", width="small",
-                                                     help=_IVPP_HELP),
+        "IV+pp":      st.column_config.NumberColumn(
+            "IV+pp", format="%+.1f pp", width="small",
+            help=(
+                "Short-leg IV residual vs the fitted surface. Spreads"
+                " here are CREDIT-leaning — positive IV+pp on the short"
+                " leg means you're collecting richer-than-fair premium"
+                " on the side you sold. Look for +3 pp or higher."
+            ),
+        ),
         "Earnings":   st.column_config.TextColumn("Earn", width="small",
                                                    help="⚠ = earnings event before expiration"),
     }
@@ -2168,7 +2590,7 @@ def _show_spreads_table(sub: pd.DataFrame, strategy_name: str,
         width="stretch",
         on_select="rerun",
         selection_mode="single-row",
-        key=f"sp_tbl_{strategy_name.replace(' ', '_').replace('/', '_').replace('×', 'x')}",
+        key=f"{key_prefix}_tbl_{strategy_name.replace(' ', '_').replace('/', '_').replace('×', 'x')}",
     )
     _stamp_caption()
     selected_rows = event.selection.rows if hasattr(event, "selection") else []
@@ -2421,12 +2843,47 @@ def _render_spreads_view(
             if strategy_name in ("Long Straddle", "Long Strangle"):
                 st.caption("ℹ Max profit is capped at 3× debit for ranking — "
                            "actual upside is unbounded.")
-            selected_idx = _show_spreads_table(sub, strategy_name, spot)
+            selected_idx = _show_spreads_table(sub, strategy_name, spot,
+                                                key_prefix=key_prefix)
 
             if selected_idx is not None and selected_idx < len(sub):
                 row = sub.iloc[selected_idx]
                 st.markdown("**Payoff diagram**")
                 _show_payoff_chart(row, spot)
+
+                # ── Monte Carlo for the selected multi-leg strategy ─────────
+                from spreads import build_legs_from_row
+                raw_legs = build_legs_from_row(row)
+                if raw_legs:
+                    try:
+                        exp = pd.to_datetime(row["expiration"]).date()
+                        legs_spec = [
+                            LegSpec(
+                                opt_type=lg["type"],
+                                strike=float(lg["strike"]),
+                                expiration=exp,
+                                side="long" if int(lg["qty"]) > 0 else "short",
+                                mid=float(lg.get("entry_mid", 0.0)),
+                                iv=float(lg["iv"]) if lg.get("iv") else None,
+                                qty=abs(int(lg["qty"])),
+                            )
+                            for lg in raw_legs
+                        ]
+                        spread_position = position_from_legs(
+                            underlying=ticker,
+                            spot=spot,
+                            legs_spec=legs_spec,
+                            earnings_dates=(),
+                            risk_free_rate=0.045,
+                        )
+                        st.markdown("**Monte Carlo P&L distribution**")
+                        render_mc_panel(
+                            spread_position,
+                            key=f"{key_prefix}_mc_{strategy_name.replace(' ', '_')}_{selected_idx}",
+                            label=f"{strategy_name} — {len(legs_spec)}-leg position",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        st.caption(f"_MC unavailable for this row: {exc}_")
 
     with st.expander("Column & Greek key"):
         st.markdown("""
