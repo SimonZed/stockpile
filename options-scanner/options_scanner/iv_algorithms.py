@@ -31,7 +31,14 @@ import pandas as pd
 # Hashable single-algorithm config: (name, frozenset({(kwarg, val), ...}))
 AlgorithmConfig = tuple[str, frozenset]
 
-_MIN_GLOBAL_ROWS = 5   # global_poly needs ≥5 points for the 5-term fit
+# global_poly fits a 5-term surface (a + b·m + c·m² + d·√T + e·m·√T).
+# Require ≥2 residual degrees of freedom — params + 2 = 7 — so the fit
+# is a genuine regression, never an exact interpolant. With exactly 5
+# points the polynomial passes through every one (residuals ≡ 0,
+# iv_excess ≡ 0, z-score σ collapses); below 7 we'd rather fall back to
+# the honest flat surface than report a fake-perfect fit.
+_GLOBAL_PARAMS = 5
+_MIN_GLOBAL_ROWS = _GLOBAL_PARAMS + 2   # = 7
 # per_expiration picks the highest polynomial degree that still leaves
 # ≥2 residual degrees of freedom, so a slice is FIT, never interpolated
 # (a degree-d polynomial passes exactly through d+1 points). Below the

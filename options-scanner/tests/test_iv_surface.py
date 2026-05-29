@@ -70,6 +70,26 @@ def test_preserves_row_count_and_order():
         )
 
 
+def test_in_fit_column_marks_the_fit_subset():
+    """in_fit flags which rows anchored the regression. With no filters,
+    every valid row (iv > 0.02 & dte > 0) is in the fit."""
+    df = make_chain(100, [30, 60], [90, 95, 100, 105, 110], lambda K, t: 0.30)
+    out = compute_iv_excess(df, surface_filters=())
+    assert "in_fit" in out.columns
+    assert bool(out["in_fit"].all())
+    assert int(out["in_fit"].sum()) == len(df)
+
+
+def test_in_fit_excludes_sub_threshold_iv_rows():
+    """A row below the 0.02 fit floor is excluded from the fit (in_fit
+    False) but still receives every output column."""
+    df = make_chain(100, [30, 60], [90, 95, 100, 105, 110], lambda K, t: 0.30)
+    df.loc[0, "iv"] = 0.01
+    out = compute_iv_excess(df, surface_filters=())
+    assert not bool(out.loc[0, "in_fit"])
+    assert int(out["in_fit"].sum()) == len(df) - 1
+
+
 def test_does_not_mutate_input():
     df = make_chain(100, [30, 60], [90, 95, 100, 105, 110], lambda K, t: 0.30)
     before_cols = list(df.columns)

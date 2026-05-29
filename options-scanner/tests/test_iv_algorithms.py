@@ -45,10 +45,24 @@ def test_global_poly_recovers_quadratic_exactly():
     assert np.abs(df["iv"].to_numpy() - fitted).max() < 1e-8
 
 
-def test_global_poly_returns_none_below_five_rows():
+def test_global_poly_requires_residual_dof():
+    """global_poly needs > params rows so the fit is a genuine regression,
+    not an exact interpolant. The 5-term model has 5 params; with only 6
+    rows there are <2 residual DOF, so it falls back rather than report a
+    fake-perfect (residual ≡ 0) surface. With 8 rows it fits."""
     spot = 100.0
-    df = _chain(spot, [(30, "A")], [95, 100, 105], lambda K, t: 0.30)
-    assert iv_algorithms.fit(df, _all(df), ("global_poly", frozenset())) is None
+    three = _chain(spot, [(30, "A")], [95, 100, 105], lambda K, t: 0.30)
+    assert iv_algorithms.fit(three, _all(three),
+                             ("global_poly", frozenset())) is None
+    six = _chain(spot, [(30, "A")], [80, 90, 100, 110, 120, 130],
+                 lambda K, t: 0.30)
+    assert iv_algorithms.fit(six, _all(six),
+                             ("global_poly", frozenset())) is None
+    eight = _chain(spot, [(30, "A")],
+                   [70, 80, 90, 100, 110, 120, 130, 140], lambda K, t: 0.30)
+    fitted = iv_algorithms.fit(eight, _all(eight),
+                               ("global_poly", frozenset()))
+    assert fitted is not None and len(fitted) == len(eight)
 
 
 def test_per_expiration_recovers_distinct_slice_curves():

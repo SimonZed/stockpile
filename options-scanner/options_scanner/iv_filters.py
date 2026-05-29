@@ -116,3 +116,26 @@ def apply(df: pd.DataFrame, config: SurfaceFilterConfig) -> pd.DataFrame:
         kwargs = {**entry["defaults"], **dict(kwargs_fs)}
         result = entry["fn"](result, **kwargs)
     return result
+
+
+def funnel(df: pd.DataFrame,
+           config: SurfaceFilterConfig) -> list[tuple[str, int, int]]:
+    """Replay the filter chain, recording (label, remaining, dropped) per stage.
+
+    Mirrors `apply` step-for-step — same loop body, same skip rule — so
+    the reported counts can never drift from the real fit subset. `label`
+    is the registry label; `remaining` is the row count after that stage
+    and `dropped` is how many that stage removed. Unknown filter names are
+    skipped (as in `apply`) and produce no row.
+    """
+    result = df
+    stages: list[tuple[str, int, int]] = []
+    for name, kwargs_fs in config:
+        if name not in REGISTRY:
+            continue
+        entry  = REGISTRY[name]
+        kwargs = {**entry["defaults"], **dict(kwargs_fs)}
+        before = len(result)
+        result = entry["fn"](result, **kwargs)
+        stages.append((entry["label"], len(result), before - len(result)))
+    return stages

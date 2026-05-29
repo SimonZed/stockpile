@@ -27,6 +27,7 @@ from options_scanner.display.gex_chart import show_gex_chart
 from options_scanner.display.iv_chart import show_iv_chart
 from options_scanner.display.outlook_card import render_outlook_card
 from options_scanner.display.scan_results import show_scan_results
+from options_scanner.display.surface_diagnostics import show_surface_diagnostics
 from options_scanner.display.spot_meta import (
     fetch_spot_meta,
     spot_help_text,
@@ -476,6 +477,7 @@ def tab_single() -> None:
             "roll_strike": roll_strike if rolling else None,
             "roll_type": roll_type_sel if rolling else None,
             "surface_filters": surface_filter_config,
+            "algo_config": algo_config,
         }
 
         # Persist the scan parameters for the Recent Scans dropdown.
@@ -611,7 +613,11 @@ def tab_single() -> None:
                    min_vol=res.get("min_vol", 0),
                    provider=st.session_state.get("scan_provider", "yahoo"),
                    earnings_dates=res.get("earnings_dates"),
-                   surface_filters=res.get("surface_filters"))
+                   surface_filters=res.get("surface_filters"),
+                   df_full=df_r)
+
+    show_surface_diagnostics(df_r, res.get("surface_filters"),
+                             res.get("algo_config"))
 
     show_gex_chart(df_r, spot,
                     provider=st.session_state.get("scan_provider", "yahoo"),
