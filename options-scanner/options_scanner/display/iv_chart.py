@@ -309,8 +309,8 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
     else:
         bg_fit, bg_excl = bg_rest, bg_rest.iloc[0:0]
 
-    background = alt.Chart(bg_fit).mark_circle(
-        size=60, opacity=1.0,
+    background = alt.Chart(bg_fit).mark_point(
+        size=60, opacity=1.0, filled=True,
     ).encode(
         x=base_x,
         y=base_y,
@@ -322,7 +322,7 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
     )
 
     excluded = alt.Chart(bg_excl).mark_point(
-        size=60, opacity=0.9, filled=False, strokeWidth=1.5,
+        size=70, opacity=1.0, filled=False, strokeWidth=2.6,
     ).encode(
         x=base_x,
         y=base_y,
@@ -368,12 +368,36 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
         text="label:N",
     )
 
+    # When the "show all fit points" toggle reveals strikes outside the
+    # display delta range, shade the strike bands beyond the normally
+    # displayed span so the extra points read as out-of-range context.
+    shade_layers = []
+    if show_all_fit:
+        _shown = chart_df[chart_df["expiration"] == chosen_exp]
+        if not _shown.empty:
+            shown_lo = float(_shown["strike"].min())
+            shown_hi = float(_shown["strike"].max())
+            bands = []
+            if x_min < shown_lo:
+                bands.append({"x": x_min, "x2": shown_lo})
+            if shown_hi < x_max:
+                bands.append({"x": shown_hi, "x2": x_max})
+            if bands:
+                shade = alt.Chart(pd.DataFrame(bands)).mark_rect(
+                    color="#64748b", opacity=0.09,
+                ).encode(
+                    x=alt.X("x:Q", scale=alt.Scale(domain=[x_min, x_max])),
+                    x2="x2:Q",
+                )
+                shade_layers.append(shade)
+
     type_word = {"call": "calls", "put": "puts", "both": "options"}[mode]
     title_text = (f"{ticker} {type_word} — {exp_labels[chosen_exp]}"
                   if ticker else f"{type_word} — {exp_labels[chosen_exp]}")
-    chart = (
-        line_surface + background + excluded + picks + ranks
-        + spot_rule + spot_label
+    chart = alt.layer(
+        *shade_layers,
+        line_surface, background, excluded, picks, ranks,
+        spot_rule, spot_label,
     ).properties(
         height=380,
         title=alt.TitleParams(
@@ -387,6 +411,14 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
     )
     st.altair_chart(chart, width='stretch')
 
+    shade_note = (
+        "<br>"
+        "<span style='background:rgba(100,116,139,0.16);padding:0 0.35em'>"
+        "&nbsp;&nbsp;&nbsp;</span>"
+        " <b>Shaded band</b> = strikes outside the display &Delta; range,"
+        " revealed by the toggle above."
+        if show_all_fit and shade_layers else ""
+    )
     st.markdown(
         "<div style='font-size:0.8rem;line-height:1.9;color:var(--osc-ink-3)'>"
         "<span style='color:#10b981'>&#9632;&#9632; &mdash; &mdash;</span>"
@@ -405,6 +437,7 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
         "<b>Large outlined dot + number</b> = top pick;"
         " number matches rank in table below (1&nbsp;=&nbsp;strongest signal)."
         " Vertical dashed line = current spot price."
+        + shade_note +
         "</div>",
         unsafe_allow_html=True,
     )
