@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 
 from options_scanner import iv_scores
+from options_scanner.format import fmt_strike
 from options_scanner.ui_theme import empty_state
 
 from options_scanner.display.chain_styling import (
@@ -58,7 +59,7 @@ def show_df(sub: pd.DataFrame, roll_close_cost: float | None = None,
     kind = iv_scores.active_kind(sub)
     cols = {
         **rank_col,
-        "Strike": sub["strike"].apply(lambda x: f"${x:.0f}"),
+        "Strike": sub["strike"].apply(fmt_strike),
         "Expiration": sub["expiration"].apply(
             lambda e: datetime.strptime(e, "%Y-%m-%d").strftime("%b %d '%y")
         ),

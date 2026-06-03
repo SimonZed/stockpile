@@ -23,6 +23,7 @@ import pandas as pd
 import streamlit as st
 
 from options_scanner.compute.top_ranks import compute_top_ranks
+from options_scanner.format import STRIKE_D3_FORMAT
 from options_scanner.display.scan_stamp import scan_stamp_color, scan_stamp_text
 from options_scanner.display.iv_surface_3d import render_iv_surface_3d
 
@@ -292,7 +293,7 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
     base_x = alt.X(
         "strike:Q", title="Strike",
         scale=alt.Scale(domain=[x_min, x_max]),
-        axis=alt.Axis(format="$,.0f"),
+        axis=alt.Axis(format=STRIKE_D3_FORMAT),
     )
     y_scale = alt.Scale(domain=[y_min, y_max])
     base_y = alt.Y("IV%:Q", title="Implied Volatility (%)", scale=y_scale)
@@ -302,7 +303,7 @@ def show_iv_chart(df: pd.DataFrame, spot: float, mode: str,
                      "VRP": ".2f", "IV %ile": ".0f"}
     _score_d3_fmt = _SCORE_D3_FMT.get(_score_kind, "+.2f")
     tooltip_fields = [
-        alt.Tooltip("strike:Q",       title="Strike",          format="$,.0f"),
+        alt.Tooltip("strike:Q",       title="Strike",          format=STRIKE_D3_FORMAT),
         alt.Tooltip("type:N",         title="Type"),
         alt.Tooltip("IV%:Q",                                   format=".1f"),
         alt.Tooltip("FittedIV%:Q",    title="Surface IV%",     format=".1f"),
@@ -517,7 +518,7 @@ def _render_all_expirations(frame: pd.DataFrame, spot: float,
     base_x = alt.X(
         "strike:Q", title="Strike",
         scale=alt.Scale(domain=[x_min, x_max]),
-        axis=alt.Axis(format="$,.0f"),
+        axis=alt.Axis(format=STRIKE_D3_FORMAT),
     )
     y_enc = alt.Y("FittedIV%:Q", title="Fitted IV (%)",
                   scale=alt.Scale(domain=[y_min, y_max]))
@@ -526,7 +527,7 @@ def _render_all_expirations(frame: pd.DataFrame, spot: float,
     tooltip = [
         alt.Tooltip("ExpDate:N",   title="Expiration"),
         alt.Tooltip("dte:Q",       title="DTE",         format="d"),
-        alt.Tooltip("strike:Q",    title="Strike",      format="$,.0f"),
+        alt.Tooltip("strike:Q",    title="Strike",      format=STRIKE_D3_FORMAT),
         alt.Tooltip("FittedIV%:Q", title="Surface IV%", format=".1f"),
         alt.Tooltip("IV%:Q",       title="IV%",         format=".1f"),
     ]

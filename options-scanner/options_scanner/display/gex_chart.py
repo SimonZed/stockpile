@@ -16,6 +16,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from options_scanner.format import STRIKE_D3_FORMAT
 from options_scanner.display.scan_stamp import scan_stamp_color, scan_stamp_text
 
 
@@ -112,7 +113,7 @@ def show_gex_chart(df: pd.DataFrame, spot: float,
     bars = alt.Chart(gex_zoomed).mark_bar(opacity=0.85).encode(
         x=alt.X("strike:Q", title="Strike",
                 scale=alt.Scale(domain=[x_min, x_max]),
-                axis=alt.Axis(format="$,.0f")),
+                axis=alt.Axis(format=STRIKE_D3_FORMAT)),
         y=alt.Y("gex:Q", title="Net GEX ($)"),
         color=alt.Color("color:N",
                         scale=alt.Scale(
@@ -121,7 +122,7 @@ def show_gex_chart(df: pd.DataFrame, spot: float,
                         ),
                         legend=alt.Legend(title=None)),
         tooltip=[
-            alt.Tooltip("strike:Q",  title="Strike",  format="$,.0f"),
+            alt.Tooltip("strike:Q",  title="Strike",  format=STRIKE_D3_FORMAT),
             alt.Tooltip("gex:Q",     title="Net GEX", format=",.0f"),
             alt.Tooltip("color:N",   title="Effect"),
         ],

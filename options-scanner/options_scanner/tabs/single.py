@@ -34,6 +34,7 @@ from options_scanner.display.spot_meta import (
     spot_value_html,
 )
 from options_scanner.fetch import fetch_and_enrich
+from options_scanner.format import fmt_strike
 from options_scanner import iv_algorithms, iv_scores
 from options_scanner.iv_filters import DEFAULT_CONFIG as FILTER_DEFAULT, SurfaceFilterConfig
 from options_scanner.mc_ui import position_from_chain_row, render_mc_panel
@@ -582,7 +583,7 @@ def tab_single() -> None:
     )
 
     if rcc is not None:
-        st.info(f"Rolling {res['roll_type']} ${res['roll_strike']:.0f} "
+        st.info(f"Rolling {res['roll_type']} {fmt_strike(res['roll_strike'])} "
                 f"{res['roll_exp_str']} — close cost (mid): **${rcc:.2f}**")
 
     # Rescan button (fixed to header bar) + scan-criteria summary on
@@ -594,7 +595,7 @@ def tab_single() -> None:
     _dte_str = f"DTE {_min_dte}–{_max_dte}" if _max_dte else f"DTE ≥{_min_dte}"
     _delta_str = f"Δ {res['delta_min']:.2f}–{res['delta_max']:.2f}"
     if rcc is not None:
-        _mode_str = f"{res.get('roll_type','').upper()} ${res.get('roll_strike',0):.0f} exp {res.get('roll_exp_str','')}"
+        _mode_str = f"{res.get('roll_type','').upper()} {fmt_strike(res.get('roll_strike',0))} exp {res.get('roll_exp_str','')}"
         _summary = (f"**Roll** · {_mode_str} · {_dte_str} · "
                     f"OI≥{res['min_oi']} · Vol≥{res.get('min_vol',0)} · {_delta_str}")
     else:
@@ -787,7 +788,7 @@ def tab_single() -> None:
                 render_mc_panel(
                     position,
                     key=f"s_mc_panel_{choice_idx}_{side}_{qty}",
-                    label=f"{ticker_r} {opt_type.upper()} ${picked['strike']:.0f} "
+                    label=f"{ticker_r} {opt_type.upper()} {fmt_strike(picked['strike'])} "
                           f"exp {pd.to_datetime(picked['expiration']).strftime('%b %d %y')}",
                 )
 

@@ -19,6 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from options_scanner import iv_scores
+from options_scanner.format import fmt_strike
 from options_scanner.display.scan_stamp import stamp_caption
 
 
@@ -138,7 +139,7 @@ def _render_table(board: pd.DataFrame, side: str, min_vol: int) -> None:
 
     cols = {
         "Ticker": board["ticker"],
-        "Strike": board["strike"].apply(lambda x: f"${x:.0f}"),
+        "Strike": board["strike"].apply(fmt_strike),
         "Expiration": board.apply(
             lambda r: datetime.strptime(r["expiration"], "%Y-%m-%d")
             .strftime("%b %d '%y") + _earn_tag(r.get("earnings_count")),

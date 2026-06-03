@@ -63,7 +63,7 @@ def render_iv_surface_3d(frame: pd.DataFrame, spot: float, ticker: str,
             has_delta = False
 
     hover = (
-        "Strike $%{x:,.0f}<br>DTE %{y}d<br>%{customdata[1]}"
+        "Strike $%{x:,.2~f}<br>DTE %{y}d<br>%{customdata[1]}"
         "<br>IV %{z:.1f}%  ·  IV+pp %{customdata[0]:+.1f}"
         "<br>Delta %{customdata[2]:.2f}"
         "<br>Bid $%{customdata[3]:.2f}  Ask $%{customdata[4]:.2f}"

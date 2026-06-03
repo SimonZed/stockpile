@@ -4,6 +4,8 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from options_scanner.format import fmt_strike
+
 log = logging.getLogger(__name__)
 
 _CSS = """
@@ -156,7 +158,7 @@ def _build_table(sub, table_id: str, buy: bool,
         net_cr = r["mid"] - roll_close_cost if has_net else None
 
         cells = [
-            f'<td data-val="{r["strike"]:.2f}">${r["strike"]:.0f}</td>',
+            f'<td data-val="{r["strike"]:.2f}">{fmt_strike(r["strike"])}</td>',
             f'<td data-val="{r["expiration"]}">{_fmt_exp(r["expiration"])}{earn_tag}</td>',
             f'<td data-val="{r["dte"]}">{int(r["dte"])}</td>',
             f'<td data-val="{r["bid"]:.4f}">${r["bid"]:.2f}</td>',
@@ -427,7 +429,7 @@ def render_html(
         rexp_fmt = _fmt_exp(rexp) if rexp else rexp
         close_str = f"${roll_close_cost:.2f}" if roll_close_cost is not None else "—"
         roll_meta_html = (
-            f'<span>Rolling: <strong>${rstrike:.0f} {rexp_fmt} {rtype}</strong>'
+            f'<span>Rolling: <strong>{fmt_strike(rstrike)} {rexp_fmt} {rtype}</strong>'
             f' &mdash; Buy-back: <strong>{close_str}</strong></span>'
         )
 
@@ -562,7 +564,7 @@ def _leaderboard_html(results: list[dict], side: str, min_oi: int,
             if r.get("_is_ticker_top") else ""
         rows.append(
             f'<tr{tr_attr}><td><a href="#{r["ticker"]}">{r["ticker"]}</a></td>'
-            f'<td data-val="{r["strike"]:.2f}">${r["strike"]:.0f}</td>'
+            f'<td data-val="{r["strike"]:.2f}">{fmt_strike(r["strike"])}</td>'
             f'<td data-val="{r["expiration"]}">{_fmt_exp(r["expiration"])}{earn_tag}</td>'
             f'<td data-val="{r["dte"]}">{int(r["dte"])}</td>'
             f'<td data-val="{r["bid"]:.4f}">${r["bid"]:.2f}</td>'

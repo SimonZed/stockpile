@@ -16,6 +16,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from options_scanner.format import fmt_strike
 from options_scanner.display.outlook_card import OUTLOOK_TONE_HEX
 
 
@@ -70,7 +71,7 @@ def render_portfolio_action_card(
 
         if opt_type == "puts":
             action_label = "ROLL existing short put"
-            opt_code = f"{ticker} ${strike:.0f}P exp {expiry}"
+            opt_code = f"{ticker} {fmt_strike(strike)}P exp {expiry}"
             effective_buy = strike - (mid - roll_close)
             breakeven_line = (
                 f"<b>Effective buy price if assigned:</b> ${effective_buy:.2f}"
@@ -78,7 +79,7 @@ def render_portfolio_action_card(
             )
         else:
             action_label = "ROLL existing covered call"
-            opt_code = f"{ticker} ${strike:.0f}C exp {expiry}"
+            opt_code = f"{ticker} {fmt_strike(strike)}C exp {expiry}"
             new_be = strike + (mid - roll_close)
             breakeven_line = (
                 f"<b>New breakeven (stock):</b> ${new_be:.2f}"
@@ -106,7 +107,7 @@ def render_portfolio_action_card(
         breakeven_stock = strike - mid
         action_label = "SELL TO OPEN cash-secured put"
         action_lines = [
-            f"<b>Action:</b> Sell 1× <code>{ticker} ${strike:.0f}P exp {expiry}</code>"
+            f"<b>Action:</b> Sell 1× <code>{ticker} {fmt_strike(strike)}P exp {expiry}</code>"
             f" to open at mid ~${mid:.2f}",
             f"<b>Premium collected:</b> ${premium:,.0f} (1 contract)",
             f"<b>Cash required (approx.):</b> ${margin_approx:,.0f} (strike × 100)",
@@ -126,7 +127,7 @@ def render_portfolio_action_card(
             action_lines = [
                 f"{pos_desc} — need at least 100 shares per contract.",
                 f"Top IV-rich call for reference:"
-                f" <code>{ticker} ${strike:.0f}C exp {expiry}</code>"
+                f" <code>{ticker} {fmt_strike(strike)}C exp {expiry}</code>"
                 f" at mid ~${mid:.2f}",
             ]
             breakeven_line = ""
@@ -141,11 +142,11 @@ def render_portfolio_action_card(
             action_label = "SELL TO OPEN covered call"
             action_lines = [
                 f"<b>Action:</b> Sell {max_contracts}×"
-                f" <code>{ticker} ${strike:.0f}C exp {expiry}</code>"
+                f" <code>{ticker} {fmt_strike(strike)}C exp {expiry}</code>"
                 f" to open at mid ~${mid:.2f}",
                 f"<b>Premium collected:</b> ${premium_total:,.0f}"
                 f" ({max_contracts} contract(s) × ${premium_per_contract:,.0f})",
-                f"<b>Max profit if assigned at ${strike:.0f}:</b>"
+                f"<b>Max profit if assigned at {fmt_strike(strike)}:</b>"
                 f" ${max_profit_total:,.0f} (capped — stock gets called away)",
                 f"<b>Assignment probability:</b> ~{assign_prob:.0f}% (Δ proxy)",
             ]
