@@ -1,13 +1,17 @@
 // dashboard.js — state management, pane rendering, live data, bootstrap
 // Depends on: indicators.js, indicators-render.js, LightweightCharts global
 
-const STORAGE_KEY = 'td-v11';
+const STORAGE_KEY = 'td-v12';
 const MAX_PANES = 8;
 const TFS = ['1m','3m','5m','15m','30m','1h','4h','1d','1w','1M'];
-const SRC_LABELS = { hyperliquid: 'Hyperliquid (Crypto)', yfinance: 'Yahoo Finance' };
+const SRC_LABELS = { hyperliquid: 'Hyperliquid (Crypto)', yfinance: 'Yahoo Finance', schwab: 'Schwab' };
 const SOURCES = Object.keys(SRC_LABELS);
 
-let CATALOG = { hyperliquid: ['ETH'], yfinance: ['AVGO'] };
+let CATALOG = { hyperliquid: ['ETH'], yfinance: ['AVGO'], schwab: ['AAPL'] };
+
+// Source new panes start on. User-overridable via the "New panes:" dropdown
+// and persisted; panes whose source/symbol the user has set are left alone.
+const DEFAULT_SOURCE = 'yfinance';
 
 const IND_SECTIONS = [
   { title: 'Moving Averages', items: [
@@ -53,36 +57,55 @@ const IND_SECTIONS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-function defaultPanes() {
+function defaultPanes(src = DEFAULT_SOURCE) {
+  const cat = CATALOG[src] || [''];
   return Array.from({ length: MAX_PANES }, (_, i) => ({
     id: i,
-    source: 'hyperliquid',
-    symbol: CATALOG.hyperliquid[i % CATALOG.hyperliquid.length],
+    source: src,
+    symbol: cat[i % cat.length] || '',
     timeframe: '1d',
     indicators: {},
     frvpRange: null,
+    customized: false,
   }));
 }
 
 let _initDebounceTimers = {};
 const state = {
-  chartCount: 1, panes: defaultPanes(),
+  chartCount: 1, defaultSource: DEFAULT_SOURCE, panes: defaultPanes(),
   charts: new Map(), sockets: new Map(), pollers: new Map(), ros: new Map(),
 };
 
 function loadState() {
-  try {
-    state.chartCount = 1;
-    state.panes = defaultPanes();
-    saveState();
-  } catch {}
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch {}
+  state.defaultSource = (saved && saved.defaultSource) || DEFAULT_SOURCE;
+  const panes = defaultPanes(state.defaultSource);
+  if (saved && Array.isArray(saved.panes)) {
+    saved.panes.forEach(sp => {
+      if (sp && typeof sp.id === 'number' && panes[sp.id]) {
+        panes[sp.id] = {
+          ...panes[sp.id],
+          source: sp.source || panes[sp.id].source,
+          symbol: sp.symbol || panes[sp.id].symbol,
+          timeframe: sp.timeframe || panes[sp.id].timeframe,
+          indicators: sp.indicators || {},
+          frvpRange: sp.frvpRange || null,
+          customized: !!sp.customized,
+        };
+      }
+    });
+  }
+  state.panes = panes;
+  state.chartCount = (saved && saved.chartCount) || 1;
 }
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     chartCount: state.chartCount,
-    panes: state.panes.map(({ id, source, symbol, timeframe, indicators, frvpRange }) =>
-      ({ id, source, symbol, timeframe, indicators, frvpRange: frvpRange || null })),
+    defaultSource: state.defaultSource,
+    panes: state.panes.map(({ id, source, symbol, timeframe, indicators, frvpRange, customized }) =>
+      ({ id, source, symbol, timeframe, indicators, frvpRange: frvpRange || null, customized: !!customized })),
   }));
 }
 
@@ -212,12 +235,13 @@ function renderDashboard() {
     srcSel.addEventListener('change', () => {
       ps.source = srcSel.value;
       ps.symbol = (CATALOG[ps.source] || [])[0] || '';
+      ps.customized = true;
       saveState(); renderDashboard(); initAll();
     });
     const applyCustom = () => {
       const v = custIn.value.trim().toUpperCase();
       if (!v || v === ps.symbol) return;
-      ps.symbol = v; saveState(); debouncedInitPane(ps.id);
+      ps.symbol = v; ps.customized = true; saveState(); debouncedInitPane(ps.id);
     };
     custIn.addEventListener('change', applyCustom);
     custIn.addEventListener('keydown', e => { if (e.key === 'Enter') applyCustom(); });
@@ -353,8 +377,33 @@ function initAll() {
 function resetAll() {
   for (let i = 0; i < MAX_PANES; i++) destroyPane(i);
   state.chartCount = 1;
-  state.panes = defaultPanes();
+  state.panes = defaultPanes(state.defaultSource);
   document.getElementById('chartCount').value = '1';
+  saveState(); renderDashboard(); initAll();
+}
+
+function populateDefaultSourceSelect() {
+  const sel = document.getElementById('defaultSource');
+  if (!sel) return;
+  sel.innerHTML = '';
+  SOURCES.forEach(o => {
+    const e = document.createElement('option');
+    e.value = o; e.textContent = SRC_LABELS[o] || o;
+    if (o === state.defaultSource) e.selected = true;
+    sel.appendChild(e);
+  });
+}
+
+function applyDefaultSource(src) {
+  state.defaultSource = src;
+  // Re-seed only panes the user hasn't explicitly set (source/symbol untouched).
+  const cat = CATALOG[src] || [''];
+  state.panes.forEach((ps, i) => {
+    if (!ps.customized) {
+      ps.source = src;
+      ps.symbol = cat[i % cat.length] || '';
+    }
+  });
   saveState(); renderDashboard(); initAll();
 }
 
@@ -365,14 +414,12 @@ async function bootstrap() {
     if (body?.symbols) {
       if (body.symbols.yfinance) CATALOG.yfinance = body.symbols.yfinance;
       if (body.symbols.hyperliquid) CATALOG.hyperliquid = body.symbols.hyperliquid;
+      if (body.symbols.schwab) CATALOG.schwab = body.symbols.schwab;
     }
   } catch {}
   loadState();
+  populateDefaultSourceSelect();
   document.getElementById('chartCount').value = String(state.chartCount);
-  if (!localStorage.getItem(STORAGE_KEY)) {
-    state.chartCount = 1;
-    document.getElementById('chartCount').value = '1';
-  }
   renderDashboard();
   initAll();
 }
@@ -383,6 +430,7 @@ document.getElementById('chartCount').addEventListener('change', e => {
   state.chartCount = Number(e.target.value);
   saveState(); renderDashboard(); initAll();
 });
+document.getElementById('defaultSource').addEventListener('change', e => applyDefaultSource(e.target.value));
 document.getElementById('resetBtn').addEventListener('click', resetAll);
 window.addEventListener('beforeunload', () => { for (let i = 0; i < MAX_PANES; i++) destroyPane(i); });
 

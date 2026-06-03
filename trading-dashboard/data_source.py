@@ -1,5 +1,6 @@
 import time as _time
-import threading, random
+import threading, random, tomllib
+from pathlib import Path
 import yfinance as yf
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -63,7 +64,45 @@ def fetch_hyperliquid(symbol: str, interval: str, limit: int = 200) -> list:
         raise ValueError(f"Hyperliquid: unexpected response for '{coin}'")
     return [{"time":int(c['t'])//1000,"open":float(c['o']),"high":float(c['h']),"low":float(c['l']),"close":float(c['c']),"volume":float(c['v'])} for c in data[-limit:]]
 
-_DATASOURCE_REGISTRY = { 'yfinance': fetch_yfinance, 'hyperliquid': fetch_hyperliquid }
+# Schwab credentials are shared with the options-scanner — one setup per repo.
+_SCHWAB_CONFIG_PATH = Path(__file__).resolve().parents[1] / "options-scanner" / "config.toml"
+_schwab_client = None
+
+def _get_schwab_client():
+    """Build (and cache) the shared Schwab client from the scanner's config."""
+    global _schwab_client
+    if _schwab_client is not None:
+        return _schwab_client
+    if not _SCHWAB_CONFIG_PATH.exists():
+        raise ValueError(f"Schwab config not found at {_SCHWAB_CONFIG_PATH}. "
+                         "First-time setup: options-scanner/SCHWAB_DATA_SOURCE.md")
+    with open(_SCHWAB_CONFIG_PATH, "rb") as f:
+        cfg = tomllib.load(f).get("schwab", {})
+    app_key, app_secret = cfg.get("app_key", ""), cfg.get("app_secret", "")
+    if (not app_key or app_key.startswith("your-")
+            or not app_secret or app_secret.startswith("your-")):
+        raise ValueError("Schwab app_key/app_secret not set in "
+                         "options-scanner/config.toml. First-time setup: "
+                         "options-scanner/SCHWAB_DATA_SOURCE.md")
+    from stocks_shared.schwab_live import get_client
+    _schwab_client = get_client(
+        app_key, app_secret,
+        cfg.get("callback_url", "https://127.0.0.1:8182/"),
+        cfg.get("token_file", "~/.config/schwab-token.json"),
+    )
+    return _schwab_client
+
+def fetch_schwab(symbol: str, interval: str, limit: int = 200) -> list:
+    # Authenticated brokerage API — no shared-session rate limiting needed.
+    from stocks_shared.schwab_live import fetch_price_history_schwab
+    return fetch_price_history_schwab(_get_schwab_client(), symbol, interval, limit)
+
+def fetch_schwab_live_price(symbol: str) -> float | None:
+    """Real-time mark for the live ticker number (fresher than daily close)."""
+    from stocks_shared.schwab_live import fetch_live_price_schwab
+    return fetch_live_price_schwab(_get_schwab_client(), symbol)
+
+_DATASOURCE_REGISTRY = { 'yfinance': fetch_yfinance, 'hyperliquid': fetch_hyperliquid, 'schwab': fetch_schwab }
 
 def fetch_ohlcv(source: str, symbol: str, interval: str, limit: int = 200) -> list:
     source = _SOURCE_ALIASES.get(source, source)

@@ -1,7 +1,7 @@
 import time, hashlib
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
-from data_source import fetch_ohlcv, _DATASOURCE_REGISTRY
+from data_source import fetch_ohlcv, fetch_schwab_live_price, _DATASOURCE_REGISTRY
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5000", "http://127.0.0.1:5000"]}})
 _CACHE = {}
@@ -39,11 +39,19 @@ def price():
             app.logger.exception("price fetch failed (source=%s symbol=%s)", source, symbol)
             return jsonify({"ok":False,"error":f"Could not fetch price for '{symbol}' from '{source}'"}), 400
     if len(candles) >= 2:
-        prev, last = candles[-2]['close'], candles[-1]['close']; chg = last - prev; chgp = (chg/prev*100) if prev else 0
+        prev, last = candles[-2]['close'], candles[-1]['close']
     elif candles:
-        last, chg, chgp = candles[0]['close'], 0.0, 0.0
+        prev = last = candles[0]['close']
     else:
         return jsonify({"ok":False,"error":f"No data for '{symbol}'"}), 404
+    # Schwab: overlay the real-time mark so the live number isn't a stale daily close.
+    if source == 'schwab':
+        try:
+            mark = fetch_schwab_live_price(symbol)
+            if mark: last = mark
+        except Exception:
+            app.logger.warning("schwab live price failed (symbol=%s); using daily close", symbol)
+    chg = last - prev; chgp = (chg/prev*100) if prev else 0
     return jsonify({"ok":True,"symbol":symbol,"price":last,"change":round(chg,4),"change_pct":round(chgp,2)})
 
 @app.route('/')
@@ -56,6 +64,7 @@ def sources():
         symbols={
             'hyperliquid': ['ETH'],
             'yfinance': ['AVGO'],
+            'schwab': ['AAPL'],
         }
     )
 
