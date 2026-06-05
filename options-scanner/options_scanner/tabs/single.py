@@ -40,7 +40,9 @@ from options_scanner import iv_algorithms, iv_scores
 from options_scanner.iv_filters import DEFAULT_CONFIG as FILTER_DEFAULT, SurfaceFilterConfig
 from options_scanner.mc_ui import position_from_chain_row, render_mc_panel
 from options_scanner.recent_scans import build_label, load as load_recent, save as save_recent
-from options_scanner.ui_theme import badge, empty_state, metric_card, section_header
+from options_scanner.ui_theme import (
+    badge, empty_state, metric_card, render_schwab_reauth_hint, section_header,
+)
 
 
 # Surface-fit presets — shared by the preset pill and the advanced section
@@ -400,6 +402,7 @@ def tab_single() -> None:
 
         if err:
             st.error(f"**{ticker_clean}:** {err}")
+            render_schwab_reauth_hint(st.session_state.get("data_source", "yahoo"))
             st.session_state.pop("single_results", None)
             st.stop()
         if df.empty:

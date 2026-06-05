@@ -34,7 +34,9 @@ from options_scanner.display.spot_meta import (
 from options_scanner.defaults import default_delta_range
 from options_scanner.fetch import fetch_position
 from options_scanner.portfolio import detect_brokerage
-from options_scanner.ui_theme import badge, metric_card, section_header
+from options_scanner.ui_theme import (
+    badge, metric_card, render_schwab_reauth_hint, section_header,
+)
 from options_scanner import watchlists
 
 
@@ -624,6 +626,11 @@ def tab_portfolio() -> None:
     stored_scan_mode = stored.get("scan_mode", "roll")
     stored_buy       = stored.get("buy", False)
     stored_side      = {"calls": "call", "puts": "put", "both": "both"}[stored_opt_type]
+
+    # If any ticker failed and the source is Schwab, the saved token has
+    # likely expired — surface the re-auth fix once, above the results.
+    if any(r.get("error") for r in results):
+        render_schwab_reauth_hint(st.session_state.get("scan_provider", "yahoo"))
 
     # ── Cross-ticker leaderboard — richest IV+pp across the whole basket ──────
     if len(results) > 1:
