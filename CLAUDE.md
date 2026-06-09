@@ -74,7 +74,13 @@ in `options-scanner/config.toml` (same `~/.config/schwab-token.json`,
 `run.cmd` / `run.sh` wrap the same `uv run`. The scanner embeds this
 dashboard as its **Live Charts** tab; `uv run run.py` from the repo root
 launches both together (Flask :5000 + Streamlit :8501), and :5000 stays
-directly reachable too.
+directly reachable too. The Live Charts iframe derives its host from the
+browser's request, so remote/cloud access works when port 5000 is also
+reachable from the client. Two env knobs (read by the Flask app, `run.py`,
+and the embed alike): `OSC_DASHBOARD_PORT` moves the dashboard off 5000 when
+that port is taken; `OSC_DASHBOARD_URL` overrides the whole embed URL for
+reverse-proxy or single-exposed-port setups (and takes precedence over the
+port).
 
 ## Project structure
 
