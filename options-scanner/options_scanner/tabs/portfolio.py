@@ -579,14 +579,14 @@ def tab_portfolio() -> None:
             except Exception as exc:
                 st.error(f"Could not parse CSV: {exc}")
                 os.unlink(tmp_path)
-                st.stop()
+                return
             os.unlink(tmp_path)
             source_name = uploaded.name
 
         if not positions:
             st.warning("No positions to scan." if is_watchlist
                        else "No positions found in this CSV.")
-            st.stop()
+            return
 
         st.success(f"Found {len(positions)} position(s): "
                    f"{', '.join(p['ticker'] for p in positions)}")
@@ -627,10 +627,22 @@ def tab_portfolio() -> None:
     stored_buy       = stored.get("buy", False)
     stored_side      = {"calls": "call", "puts": "put", "both": "both"}[stored_opt_type]
 
-    # If any ticker failed and the source is Schwab, the saved token has
-    # likely expired — surface the re-auth fix once, above the results.
-    if any(r.get("error") for r in results):
-        render_schwab_reauth_hint(st.session_state.get("scan_provider", "yahoo"))
+    # Every ticker failing is the expired-Schwab-token signature — surface
+    # the re-auth fix once, above the results. A partial failure is more
+    # likely a bad symbol or empty chain, so just name the misses.
+    failed = [r["position"]["ticker"] for r in results if r.get("error")]
+    if failed and len(failed) == len(results):
+        _scfg = st.session_state.get("schwab_config") or {}
+        render_schwab_reauth_hint(
+            st.session_state.get("scan_provider", "yahoo"),
+            key="schwab_reauth_portfolio",
+            token_file=_scfg.get("token_file"),
+        )
+    elif failed:
+        st.warning(
+            f"Could not fetch {len(failed)} of {len(results)} tickers "
+            f"({', '.join(failed)}) — details in their sections below."
+        )
 
     # ── Cross-ticker leaderboard — richest IV+pp across the whole basket ──────
     if len(results) > 1:

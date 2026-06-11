@@ -19,11 +19,17 @@ _INDEX_TICKERS = frozenset({
     "TNX", "TYX",             # Rates
 })
 
+# Class shares (BRK.B, BF.A, …) — NYSE tape uses a dot, Yahoo a dash,
+# Schwab a slash. Accept any of the three and rewrite per provider.
+_CLASS_SHARE_RE = re.compile(r"^([A-Z]{1,5})[./-]([A-Z])$")
+
 
 def normalize_ticker(ticker: str) -> str:
     """Prepend ^ for index tickers that Yahoo Finance lists under ^NAME.
 
-    Trailing ! disables normalization — the bare symbol is used as-is.
+    Class-share notation (BRK.B / BRK-B / BRK/B) is rewritten to Yahoo's
+    dash form (BRK-B). Trailing ! disables normalization — the bare
+    symbol is used as-is.
     """
     t = ticker.strip().upper()
     if t.endswith("!"):
@@ -31,6 +37,9 @@ def normalize_ticker(ticker: str) -> str:
     t = t.lstrip("^$")
     if t in _INDEX_TICKERS:
         return f"^{t}"
+    m = _CLASS_SHARE_RE.match(t)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
     return t
 
 

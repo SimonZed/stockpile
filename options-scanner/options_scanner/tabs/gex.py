@@ -33,7 +33,7 @@ from options_scanner.display.spot_meta import (
     spot_value_html,
 )
 from options_scanner.fetch import fetch_and_enrich
-from options_scanner.ui_theme import metric_card
+from options_scanner.ui_theme import metric_card, render_schwab_reauth_hint
 
 
 def tab_gex() -> None:
@@ -136,6 +136,7 @@ def tab_gex() -> None:
 
         per_ticker: dict[str, dict] = {}
         failed: list[tuple[str, str]] = []
+        fetch_errors = False  # fetch failures (vs. local no-options/no-GEX)
         progress = st.progress(
             0.0, text=f"Fetching {len(tickers)} ticker(s)…"
         )
@@ -152,6 +153,7 @@ def tab_gex() -> None:
             )
             if err:
                 failed.append((t, err))
+                fetch_errors = True
                 continue
             if df.empty:
                 failed.append((t, f"no options in {int(min_dte)}–"
@@ -170,6 +172,13 @@ def tab_gex() -> None:
             st.warning(f"**{t}** skipped — {msg}")
         if not per_ticker:
             st.error("No tickers returned GEX data.")
+            if fetch_errors:
+                _scfg = st.session_state.get("schwab_config") or {}
+                render_schwab_reauth_hint(
+                    st.session_state.get("data_source", "yahoo"),
+                    key="schwab_reauth_gex",
+                    token_file=_scfg.get("token_file"),
+                )
             st.session_state.pop("gex_results", None)
             return
 

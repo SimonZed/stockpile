@@ -1,12 +1,34 @@
 """Schwab developer API helpers — mirrors stocks_shared/yahoo.py."""
 
+import json
 import logging
+import re
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
+
+# Schwab refresh tokens expire a fixed 7 days after the initial OAuth login.
+SCHWAB_REFRESH_TOKEN_TTL_DAYS = 7.0
+
+
+def token_age_days(token_file: str) -> float | None:
+    """Days since the token's initial OAuth login, or None if unknown.
+
+    schwab-py token files wrap the OAuth token with a `creation_timestamp`
+    set at login. Age ≥ SCHWAB_REFRESH_TOKEN_TTL_DAYS means the refresh
+    token has definitively expired and schwab_auth.py must be re-run.
+    Returns None when the file is missing, unreadable, or has no timestamp.
+    """
+    try:
+        with open(Path(token_file).expanduser()) as f:
+            ts = json.load(f).get("creation_timestamp")
+        return None if ts is None else (time.time() - float(ts)) / 86400.0
+    except (OSError, ValueError, TypeError):
+        return None
 
 # Schwab uses $NAME for cash-settled index options.
 _SCHWAB_INDEX_TICKERS = frozenset({
@@ -15,10 +37,18 @@ _SCHWAB_INDEX_TICKERS = frozenset({
 })
 
 
+# Class shares (BRK.B, BF.A, …) — NYSE tape uses a dot, Yahoo a dash,
+# Schwab a slash. Accept any of the three and rewrite per provider.
+# (Mirrors _CLASS_SHARE_RE in stocks_shared/yahoo.py.)
+_CLASS_SHARE_RE = re.compile(r"^([A-Z]{1,5})[./-]([A-Z])$")
+
+
 def normalize_ticker_schwab(ticker: str) -> str:
     """Prepend $ for index tickers that Schwab lists under $NAME.
 
-    Trailing ! disables normalization — the bare symbol is used as-is.
+    Class-share notation (BRK.B / BRK-B / BRK/B) is rewritten to Schwab's
+    slash form (BRK/B). Trailing ! disables normalization — the bare
+    symbol is used as-is.
     """
     t = ticker.strip().upper()
     if t.endswith("!"):
@@ -26,6 +56,9 @@ def normalize_ticker_schwab(ticker: str) -> str:
     t = t.lstrip("^$")
     if t in _SCHWAB_INDEX_TICKERS:
         return f"${t}"
+    m = _CLASS_SHARE_RE.match(t)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
     return t
 
 # Cache maps (app_key, token_path) -> (client, token_file_mtime). The mtime

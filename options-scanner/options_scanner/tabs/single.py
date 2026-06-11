@@ -426,9 +426,12 @@ def tab_single() -> None:
 
         if err:
             st.error(f"**{ticker_clean}:** {err}")
-            render_schwab_reauth_hint(st.session_state.get("data_source", "yahoo"))
+            _scfg = st.session_state.get("schwab_config") or {}
+            render_schwab_reauth_hint(st.session_state.get("data_source", "yahoo"),
+                                      key="schwab_reauth_single",
+                                      token_file=_scfg.get("token_file"))
             st.session_state.pop("single_results", None)
-            st.stop()
+            return
         if df.empty:
             st.warning(
                 f"**{ticker_clean}:** No options found for DTE {int(min_dte)}–"
@@ -436,7 +439,7 @@ def tab_single() -> None:
                 "Try widening the DTE range or check that the ticker has listed options."
             )
             st.session_state.pop("single_results", None)
-            st.stop()
+            return
 
         # Roll: look up close cost for the existing position
         roll_close_cost = None
