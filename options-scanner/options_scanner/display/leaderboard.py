@@ -41,7 +41,8 @@ def _account_capacity(app_key: str, app_secret: str, callback_url: str,
     if cap is None:
         return None
     return {"cash": cap.cash_available, "bp": cap.buying_power,
-            "amount": cap.amount}
+            "amount": cap.amount, "type": cap.account_type,
+            "mask": cap.account_mask, "balances": cap.balances}
 
 
 def _investigate_put_dialog(c: dict, ticker_df: "pd.DataFrame | None" = None,
@@ -81,7 +82,7 @@ def _investigate_put_body(c: dict, ticker_df: "pd.DataFrame | None" = None,
     exp = datetime.strptime(c["expiration"], "%Y-%m-%d").strftime("%b %d '%y")
 
     def _money(v):
-        return f"${v:.2f}" if v is not None else "—"
+        return f"${v:,.2f}" if v is not None else "—"
 
     iv_txt = f"{c['iv'] * 100:.1f}%" if c.get("iv") is not None else "—"
     delta_txt = f"{c['delta']:.2f}" if c.get("delta") is not None else "—"
@@ -196,10 +197,12 @@ def _investigate_put_body(c: dict, ticker_df: "pd.DataFrame | None" = None,
             )
         if cap_amt is not None:
             _aff = f" · up to {affordable}" if affordable is not None else ""
-            st.caption(f"Buying capacity ${cap_amt:,.0f}{_aff} "
-                       f"(${c['strike'] * 100:,.0f} collateral each).")
+            st.caption(f"Cash for puts ${cap_amt:,.0f}{_aff} "
+                       f"(${c['strike'] * 100:,.0f} collateral each). "
+                       "See Account info below for full balances.")
         else:
-            st.caption("Buying capacity unavailable (Schwab not reachable).")
+            st.caption("Cash for puts unavailable — connect Schwab "
+                       "(Accounts & Trading access required).")
 
         # Order preview — validation only; nothing is placed.
         try:
@@ -223,6 +226,28 @@ def _investigate_put_body(c: dict, ticker_df: "pd.DataFrame | None" = None,
     with foot_r:
         st.button("Place Trade", disabled=True,
                   help="Order placement isn't wired up yet.")
+
+    # Account info — collapsed; the full Schwab balance snapshot for the linked
+    # account, sitting just above the volatility-surface chart.
+    if cap and cap.get("balances"):
+        _hdr = " · ".join(x for x in (cap.get("mask"), cap.get("type")) if x)
+        with st.expander(f"Account info{(' — ' + _hdr) if _hdr else ''}",
+                         expanded=False):
+            _bals = cap["balances"]
+
+            def _fmt_bal(k, v):
+                return f"{v:,.2f}%" if "percent" in k.lower() else _money(v)
+
+            # Split the balances across two side-by-side tables (sorted, halved).
+            _items = [(k, _fmt_bal(k, _bals[k])) for k in sorted(_bals)]
+            _half = (len(_items) + 1) // 2
+            _ac1, _ac2 = st.columns(2)
+            with _ac1:
+                st.markdown(_kv_html(_items[:_half]), unsafe_allow_html=True)
+            with _ac2:
+                st.markdown(_kv_html(_items[_half:]), unsafe_allow_html=True)
+            st.caption("Read-only. 'amount' used for put sizing is the "
+                       "cash-secured figure, not margin buying power.")
 
     # IV-surface chart — full width at the bottom (how rich this put is vs the
     # rest of the chain).
