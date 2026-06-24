@@ -9,6 +9,7 @@ Streamlit so they're unit-testable.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -55,6 +56,18 @@ def round_to_tick(price: float) -> float:
     """
     tick = tick_for(price)
     return round(round(price / tick) * tick, 2)
+
+
+def ceil_to_tick(price: float) -> float:
+    """Round UP to the conventional option tick.
+
+    Used for buy-to-close limits, where rounding the mid up to the next tick
+    biases the proposed limit toward a fill rather than away from one (e.g. a
+    3.92 mid → 3.95). A tiny epsilon keeps a price already sitting on a tick
+    from jumping a full tick on float-division noise (3.95 stays 3.95).
+    """
+    tick = tick_for(price)
+    return round(math.ceil(price / tick - 1e-9) * tick, 2)
 
 
 def assess_fill(*, bid, ask, mid=None, volume=None, open_interest=0,
@@ -412,13 +425,38 @@ CANCELLABLE_STATUSES = frozenset({
 })
 
 
+def _avg_fill_price(order: dict) -> float | None:
+    """Quantity-weighted average execution price from a Schwab order, or None.
+
+    Schwab reports each fill under ``orderActivityCollection[].executionLegs[]``
+    with a per-share ``price`` and ``quantity``; a marketable order can fill in
+    several legs/partials, so average them by quantity. None when no execution
+    legs are present yet (e.g. still working / unfilled)."""
+    px_qty = 0.0
+    qty = 0.0
+    for act in (order.get("orderActivityCollection") or []):
+        if act.get("activityType") != "EXECUTION":
+            continue
+        for leg in (act.get("executionLegs") or []):
+            try:
+                _px = float(leg.get("price"))
+                _q = float(leg.get("quantity", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if _q > 0:
+                px_qty += _px * _q
+                qty += _q
+    return round(px_qty / qty, 4) if qty > 0 else None
+
+
 def get_order_status(client, order_id, last4: str | None = None) -> dict | None:
     """Read-only broker status for one order.
 
-    Returns {status, filled, quantity, remaining, cancelable} or None on any
-    failure. `cancelable` is True while the order is live but not yet terminal
-    (so the UI can offer Cancel and avoid implying an unfilled order is a
-    real position).
+    Returns {status, filled, quantity, remaining, cancelable, filled_at,
+    fill_price} or None on any failure. `cancelable` is True while the order is
+    live but not yet terminal (so the UI can offer Cancel and avoid implying an
+    unfilled order is a real position). `fill_price` is the quantity-weighted
+    average execution price once any legs have filled, else None.
     """
     if not order_id:
         return None
@@ -451,6 +489,7 @@ def get_order_status(client, order_id, last4: str | None = None) -> dict | None:
         "remaining": d.get("remainingQuantity"),
         "cancelable": status in CANCELLABLE_STATUSES,
         "filled_at": filled_at,
+        "fill_price": _avg_fill_price(d),
     }
 
 

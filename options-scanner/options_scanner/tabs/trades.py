@@ -163,12 +163,40 @@ def _submit_close(scfg: dict, trade: dict, limit: float, live: bool) -> dict:
         quantity=qty, account_hash=account_hash)
     if not res["ok"]:
         return {"ok": False, "msg": f"Close rejected: {res['error']}"}
-    trades_store.update(trade["id"], status="closed", close_cost=round(float(limit), 2),
-                        closed_at=now, close_order_id=res["order_id"])
+    # The buy-to-close is accepted but may sit working before it fills. Track it
+    # as "closing" (not yet "closed") so the tab polls its status and offers a
+    # Cancel — the trade is finalized to "closed" only once the close fills.
+    trades_store.update(trade["id"], status="closing",
+                        close_order_id=res["order_id"],
+                        close_limit_px=round(float(limit), 2))
     _oid = f" (id {res['order_id']})" if res["order_id"] else ""
     return {"ok": True,
-            "msg": (f"✅ LIVE closing order sent to {mask}{_oid}. "
-                    "Verify at your broker.")}
+            "msg": (f"✅ LIVE closing order sent to {mask}{_oid}. It will show "
+                    "as **closing** here until it fills — cancel it from this "
+                    "tab if needed. Verify at your broker.")}
+
+
+def _cancel_close_order(scfg: dict, trade: dict) -> dict:
+    """Cancel a working BUY_TO_CLOSE order and revert the trade to open.
+
+    The buy-to-close never filled, so the position is still open — flip the
+    tracker back to "open" and clear the closing fields. Returns {ok, msg}."""
+    from stocks_shared.schwab_live import get_client
+    try:
+        client = get_client(scfg.get("app_key", ""), scfg.get("app_secret", ""),
+                            scfg.get("callback_url", ""),
+                            scfg.get("token_file", ""))
+    except Exception as exc:
+        return {"ok": False, "msg": f"Schwab unreachable: {exc}"}
+    last4 = (trade.get("account") or "")[-4:]
+    res = trade_actions.cancel_order(client, trade.get("close_order_id"),
+                                     last4 or None)
+    if not res["ok"]:
+        return {"ok": False, "msg": f"Cancel failed: {res['error']}"}
+    trades_store.update(trade["id"], status="open",
+                        close_order_id=None, close_limit_px=None)
+    return {"ok": True,
+            "msg": "✅ Closing order canceled — the position is open again."}
 
 
 @st.fragment
@@ -237,6 +265,7 @@ def tab_trades() -> None:
     # leaves that entry None (rendered "unavailable") rather than blocking the
     # whole tab. The render loop reads these maps instead of fetching inline.
     status_by_id: dict = {}
+    close_status_by_id: dict = {}
     quote_by_id: dict = {}
     if provider == "schwab" and scfg.get("app_key"):
         _ak, _as = scfg.get("app_key", ""), scfg.get("app_secret", "")
@@ -246,6 +275,10 @@ def tab_trades() -> None:
             return _order_status(_ak, _as, _cb, _tf, tr.get("order_id"),
                                  (tr.get("account") or "")[-4:])
 
+        def _close_status_job(tr):
+            return _order_status(_ak, _as, _cb, _tf, tr.get("close_order_id"),
+                                 (tr.get("account") or "")[-4:])
+
         def _quote_job(tr):
             return _close_quote(_ak, _as, _cb, _tf, tr.get("ticker"),
                                 tr.get("expiration", ""),
@@ -253,8 +286,14 @@ def tab_trades() -> None:
 
         jobs = []  # (kind, trade_id, trade)
         for tr in trades:
-            if not tr.get("paper") and tr.get("order_id"):
+            # Opening-order status only matters while the trade is still open;
+            # a working closing order is polled via close_order_id instead.
+            if (not tr.get("paper") and tr.get("order_id")
+                    and tr.get("status") == "open"):
                 jobs.append(("status", tr.get("id"), tr))
+            if (not tr.get("paper") and tr.get("close_order_id")
+                    and tr.get("status") == "closing"):
+                jobs.append(("close_status", tr.get("id"), tr))
             jobs.append(("quote", tr.get("id"), tr))
 
         if jobs:
@@ -265,10 +304,15 @@ def tab_trades() -> None:
                      if add_script_run_ctx is not None else None)
             ex = concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(8, len(jobs)), initializer=_init)
+            _job_fns = {"status": _status_job,
+                        "close_status": _close_status_job,
+                        "quote": _quote_job}
+            _job_maps = {"status": status_by_id,
+                         "close_status": close_status_by_id,
+                         "quote": quote_by_id}
             fut_map = {}
             for kind, tid, tr in jobs:
-                fn = _status_job if kind == "status" else _quote_job
-                fut_map[ex.submit(fn, tr)] = (kind, tid)
+                fut_map[ex.submit(_job_fns[kind], tr)] = (kind, tid)
             deadline = time.monotonic() + _TRADES_FETCH_TIMEOUT_S
             for fut, (kind, tid) in fut_map.items():
                 try:
@@ -276,7 +320,7 @@ def tab_trades() -> None:
                         timeout=max(0.0, deadline - time.monotonic()))
                 except Exception:
                     res = None
-                (status_by_id if kind == "status" else quote_by_id)[tid] = res
+                _job_maps[kind][tid] = res
             # Don't block on stragglers — the client's HTTP timeout reaps them.
             ex.shutdown(wait=False, cancel_futures=True)
 
@@ -329,7 +373,7 @@ def tab_trades() -> None:
 
             # Contract snapshot (open positions) — two key/value tables, built
             # from the same re-quote `q` used for cost-to-close.
-            _has_snapshot = bool(q and t.get("status") == "open")
+            _has_snapshot = bool(q and t.get("status") in ("open", "closing"))
             if _has_snapshot:
                 _strike = float(t.get("strike", 0))
                 try:
@@ -355,10 +399,23 @@ def tab_trades() -> None:
                 if t.get("fill_delta") is not None:
                     _delta_cell += ("<span style='color:#94a3b8'> · fill "
                                     f"{float(t['fill_delta']):.2f}</span>")
+                # DTE cell: days remaining, plus how long the position has been
+                # open once we know when it opened (mirrors the fill
+                # annotations on Delta/Spot).
+                _dte_cell = str(_dte) if _dte is not None else "—"
+                _opened = t.get("opened_at")
+                if _opened:
+                    try:
+                        _days_open = (datetime.now()
+                                      - datetime.fromisoformat(_opened)).days
+                        _dte_cell += ("<span style='color:#94a3b8'> · open "
+                                      f"{_days_open}d</span>")
+                    except Exception:
+                        pass
                 _terms = [
                     ("Type", "Put"), ("Strike", f"${_strike:g}"),
                     ("Expir", exp_disp),
-                    ("DTE", str(_dte) if _dte is not None else "—"),
+                    ("DTE", _dte_cell),
                     ("IV", f"{_iv * 100:.1f}%" if _iv else "—"),
                     ("Delta", _delta_cell),
                     ("Ann%", f"{_ann:.1f}%" if _ann is not None else "—"),
@@ -439,6 +496,67 @@ def tab_trades() -> None:
             else:
                 _render_cards(st.columns(4))
 
+            # Closing order in flight: a live buy-to-close is working. Keep
+            # tracking the position — poll the close order, offer Cancel, and
+            # finalize to "closed" only once it fills (mirrors the opening-order
+            # working→filled lifecycle). `continue` skips the open-order branches.
+            if t.get("status") == "closing":
+                cbs = close_status_by_id.get(t.get("id"))
+                _lim = t.get("close_limit_px")
+                _lim_txt = f" @ ${_lim:.2f}" if _lim else ""
+                if cbs and cbs.get("status") == "FILLED":
+                    # Persist the close, then rerun so the row renders cleanly as
+                    # closed (its title/status card were built above as
+                    # "closing"). Prefer the true average execution price; fall
+                    # back to the limit if Schwab hasn't surfaced fill legs.
+                    _cat = cbs.get("filled_at")
+                    _fill_px = cbs.get("fill_price")
+                    _cost = round(_fill_px, 2) if _fill_px is not None else _lim
+                    trades_store.update(
+                        t["id"], status="closed", close_cost=_cost,
+                        closed_at=(_cat.isoformat() if _cat
+                                   else datetime.now().isoformat(
+                                       timespec="seconds")))
+                    st.rerun(scope="fragment")
+                _cstat = cbs.get("status") if cbs else None
+                if _cstat:
+                    st.caption(f"⏳ Closing order **{_cstat}**{_lim_txt} — "
+                               "buy-to-close not yet filled. Cancel below to "
+                               "keep the position open, or wait for a fill.")
+                else:
+                    st.caption(f"⏳ Closing order placed{_lim_txt}; broker "
+                               "status unavailable — hit 🔄 to re-check, or "
+                               "Cancel below.")
+                _close_working = bool(cbs and cbs.get("cancelable"))
+                _ccrk = f"close_cancel_result_{t['id']}"
+                _xc1, _xc2, _ = st.columns([2, 2, 3])
+                with _xc1:
+                    if st.button("Cancel closing order",
+                                 key=f"cancel_close_{t['id']}",
+                                 disabled=not _close_working,
+                                 help=("Cancels the unfilled buy-to-close at the "
+                                       "broker; the position stays open."
+                                       if _close_working else
+                                       "Only a working order can be canceled — "
+                                       "hit 🔄 to re-check."),
+                                 width="stretch"):
+                        st.session_state[_ccrk] = _cancel_close_order(scfg, t)
+                        # Drop the stale "closing order sent" message so the
+                        # reverted-to-open close panel doesn't resurface it.
+                        st.session_state.pop(f"close_result_{t['id']}", None)
+                        _order_status.clear()
+                        st.rerun(scope="fragment")
+                with _xc2:
+                    _rmbox = st.container(key=f"rm_box_{t['id']}")
+                    _rmbox.button("Remove from Tracker", key=f"rm_{t['id']}",
+                                  on_click=trades_store.remove,
+                                  args=(t["id"],), width="stretch")
+                _ccres = st.session_state.get(_ccrk)
+                if _ccres:
+                    (st.success if _ccres["ok"] else st.error)(
+                        _ccres["msg"].replace("$", "\\$"))
+                continue
+
             # Broker order status (`bs`) was fetched above for the title.
             working = bool(bs and bs.get("cancelable"))
             is_paper = bool(t.get("paper"))
@@ -500,8 +618,19 @@ def tab_trades() -> None:
                     (st.success if _cres["ok"] else st.error)(
                         _cres["msg"].replace("$", "\\$"))
             elif _close_branch:
-                default_close = (trade_actions.round_to_tick(close_mid)
+                default_close = (trade_actions.ceil_to_tick(close_mid)
                                  if close_mid else 0.05)
+                # Re-seed the Close-limit field to the live mid whenever the
+                # re-quote moves. A keyed number_input ignores its value= arg
+                # after first render, so without this the field would freeze at
+                # the first quote's default and could sit above a since-
+                # cheapened ask. Seeding via session_state re-proposes the mid
+                # on each refresh; a manual edit survives until the mid changes.
+                _wid_key = f"close_limit_{t['id']}"
+                _seed_key = f"close_seed_{t['id']}"
+                if st.session_state.get(_seed_key) != default_close:
+                    st.session_state[_wid_key] = float(default_close)
+                    st.session_state[_seed_key] = default_close
                 _confirm_key = f"close_confirm_{t['id']}"
                 _result_key = f"close_result_{t['id']}"
                 _result = st.session_state.get(_result_key)
@@ -528,9 +657,8 @@ def tab_trades() -> None:
                     _clbox = st.container(key=f"close_box_{t['id']}")
                     close_limit = _clbox.number_input(
                         "Close limit", min_value=0.01,
-                        value=float(default_close),
                         step=float(trade_actions.tick_for(default_close)),
-                        format="%.2f", key=f"close_limit_{t['id']}",
+                        format="%.2f", key=_wid_key,
                         label_visibility="collapsed",
                     )
                 with _bc:
@@ -544,10 +672,10 @@ def tab_trades() -> None:
                     else:
                         _blocked = None
                     if _blocked:
-                        st.button("Place Closing Trade", disabled=True,
+                        st.button("Confirm Closing Trade", disabled=True,
                                   key=f"close_btn_{t['id']}", help=_blocked,
                                   width="stretch", type="primary")
-                    elif st.button("Place Closing Trade",
+                    elif st.button("Confirm Closing Trade",
                                    key=f"close_btn_{t['id']}", width="stretch",
                                    type="primary"):
                         st.session_state[_confirm_key] = True
@@ -565,19 +693,45 @@ def tab_trades() -> None:
                         f"{t.get('ticker')} ${t.get('strike')} PUT @ "
                         f"${close_limit:.2f} (debit **${_debit:,.0f}**) · "
                         + ("🔴 **LIVE**" if close_live else "📝 **PAPER**"))
-                    bc1, bc2 = st.columns(2)
+                    # Red Cancel, mirroring the Sell Put confirm panel; CSS
+                    # scoped to this trade's keyed container so other open rows
+                    # aren't restyled.
+                    _cancel_box_key = f"close_cancel_box_{t['id']}"
+                    st.markdown(
+                        ("<style>"
+                         "[class*='st-key-KEY'] button{background-color:#d9534f "
+                         "!important;border-color:#d9534f !important;"
+                         "color:#fff !important;}"
+                         "[class*='st-key-KEY'] button:hover{"
+                         "background-color:#c9302c !important;"
+                         "border-color:#c9302c !important;color:#fff !important;}"
+                         "[class*='st-key-KEY'] button p{color:#fff !important;}"
+                         "</style>").replace("KEY", _cancel_box_key),
+                        unsafe_allow_html=True,
+                    )
+                    # Collapse via on_click (runs before the rerun body) so
+                    # Cancel takes effect on the first click, like Sell Put.
+                    def _cancel_close(_k=_confirm_key):
+                        st.session_state[_k] = False
+
+                    bc1, bc2, _ = st.columns([1, 1, 3])
                     with bc1:
-                        _do = st.button(
-                            "Confirm & Submit (LIVE)" if close_live
-                            else "Confirm (tracker)",
-                            key=f"close_do_{t['id']}", type="primary")
+                        _do = st.button("Place Closing Trade",
+                                        key=f"close_do_{t['id']}",
+                                        type="primary", width="stretch")
                     with bc2:
-                        if st.button("Cancel", key=f"close_cancel_{t['id']}"):
-                            st.session_state[_confirm_key] = False
+                        _cbox = st.container(key=_cancel_box_key)
+                        _cbox.button("Cancel", key=f"close_cancel_{t['id']}",
+                                     width="stretch", on_click=_cancel_close)
                     if _do:
                         _result = _submit_close(scfg, t, close_limit, close_live)
                         st.session_state[_result_key] = _result
                         st.session_state[_confirm_key] = False
+                        # A live close moves the trade to "closing" — rerun so it
+                        # re-renders with the working-status + Cancel UI instead
+                        # of the (now stale) close panel.
+                        if _result.get("ok") and close_live:
+                            st.rerun(scope="fragment")
 
                 if _result:
                     (st.success if _result.get("ok") else st.error)(

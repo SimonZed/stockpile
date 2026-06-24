@@ -19,6 +19,31 @@ def test_round_to_tick():
     assert ta.round_to_tick(5.28) == 5.30
 
 
+def test_ceil_to_tick():
+    assert ta.ceil_to_tick(3.92) == 3.95     # nickel tick rounds UP
+    assert ta.ceil_to_tick(2.451) == 2.46    # penny tick rounds UP
+    assert ta.ceil_to_tick(3.90) == 3.90     # already on tick, unchanged
+    assert ta.ceil_to_tick(3.95) == 3.95     # float-noise guard: no jump
+
+
+def test_avg_fill_price_weights_by_quantity():
+    order = {"orderActivityCollection": [
+        {"activityType": "EXECUTION", "executionLegs": [
+            {"price": 3.90, "quantity": 1},
+            {"price": 4.00, "quantity": 3},
+        ]},
+    ]}
+    # (3.90*1 + 4.00*3) / 4 = 3.975
+    assert ta._avg_fill_price(order) == 3.975
+
+
+def test_avg_fill_price_none_without_fills():
+    assert ta._avg_fill_price({}) is None
+    assert ta._avg_fill_price(
+        {"orderActivityCollection": [{"activityType": "ORDER_ACTION"}]}
+    ) is None
+
+
 # ── fill-quality assessment ──────────────────────────────────────────────────
 
 def test_assess_fill_liquid_uses_mid():
