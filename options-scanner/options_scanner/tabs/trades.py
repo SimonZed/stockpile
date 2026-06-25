@@ -139,6 +139,13 @@ def _submit_close(scfg: dict, trade: dict, limit: float, live: bool) -> dict:
     debit = round(float(limit) * 100 * qty, 2)
     now = datetime.now().isoformat(timespec="seconds")
     if not live:
+        # A tracker-only close is valid only for a paper trade. Never "paper
+        # close" a real position — that would mark a still-open broker position
+        # closed in the tracker. The UI blocks this; this is belt-and-suspenders.
+        if not trade.get("paper"):
+            return {"ok": False,
+                    "msg": ("Live position can't be closed in paper mode — set "
+                            "paper=false in config.toml and restart.")}
         trades_store.update(trade["id"], status="closed",
                             close_cost=round(float(limit), 2), closed_at=now)
         return {"ok": True,
@@ -519,6 +526,52 @@ def tab_trades() -> None:
                                        timespec="seconds")))
                     st.rerun(scope="fragment")
                 _cstat = cbs.get("status") if cbs else None
+                _close_working = bool(cbs and cbs.get("cancelable"))
+                # Terminal but not FILLED → the buy-to-close never executed (a
+                # day order that EXPIRED at the close, or was CANCELED/REJECTED
+                # at the broker). The position is still open, so let the user
+                # reopen and try closing again next session.
+                if cbs and not _close_working and _cstat != "FILLED":
+                    _filled_n = float(cbs.get("filled") or 0)
+                    if _filled_n > 0:
+                        # Partially filled then terminated — the tracker can't
+                        # represent a partly-closed position; reconcile manually.
+                        st.warning(
+                            f"⚠️ Closing order **{_cstat}** after a partial fill "
+                            f"({int(_filled_n)} of {qty}) — reconcile this "
+                            "position at your broker, then update the tracker.")
+                        _pc1, _ = st.columns([2, 5])
+                        with _pc1:
+                            _rmbox = st.container(key=f"rm_box_{t['id']}")
+                            _rmbox.button("Remove from Tracker",
+                                          key=f"rm_{t['id']}",
+                                          on_click=trades_store.remove,
+                                          args=(t["id"],), width="stretch")
+                        continue
+                    st.warning(
+                        f"⚠️ Closing order **{_cstat}**{_lim_txt} — it did not "
+                        "fill, so the position is still open. Reopen to try "
+                        "closing again.")
+                    _xc1, _xc2, _ = st.columns([2, 2, 3])
+                    with _xc1:
+                        # Pure local revert — the broker order is already
+                        # terminal, so no cancel call is needed.
+                        if st.button("Reopen — close again",
+                                     key=f"reopen_close_{t['id']}",
+                                     type="primary", width="stretch"):
+                            trades_store.update(t["id"], status="open",
+                                                close_order_id=None,
+                                                close_limit_px=None)
+                            st.session_state.pop(f"close_result_{t['id']}", None)
+                            _order_status.clear()
+                            st.rerun(scope="fragment")
+                    with _xc2:
+                        _rmbox = st.container(key=f"rm_box_{t['id']}")
+                        _rmbox.button("Remove from Tracker", key=f"rm_{t['id']}",
+                                      on_click=trades_store.remove,
+                                      args=(t["id"],), width="stretch")
+                    continue
+
                 if _cstat:
                     st.caption(f"⏳ Closing order **{_cstat}**{_lim_txt} — "
                                "buy-to-close not yet filled. Cancel below to "
@@ -527,7 +580,6 @@ def tab_trades() -> None:
                     st.caption(f"⏳ Closing order placed{_lim_txt}; broker "
                                "status unavailable — hit 🔄 to re-check, or "
                                "Cancel below.")
-                _close_working = bool(cbs and cbs.get("cancelable"))
                 _ccrk = f"close_cancel_result_{t['id']}"
                 _xc1, _xc2, _ = st.columns([2, 2, 3])
                 with _xc1:
@@ -640,12 +692,30 @@ def tab_trades() -> None:
                 trade_live = not bool(t.get("paper"))
                 config_paper = bool(scfg.get("paper", True))
                 close_live = trade_live and not config_paper
+                # A real (live) position viewed while the app is in paper mode:
+                # it can't be paper-closed (that would mark a still-open broker
+                # position "closed" in the tracker), so flag it and block below.
+                _live_in_paper = trade_live and config_paper
+                # Badge reflects what the close would do; a live position in
+                # paper mode is LIVE (and blocked), never "paper".
+                _close_badge = ("🔴 LIVE" if (close_live or _live_in_paper)
+                                else "📝 PAPER")
 
                 # Mode + market gate ABOVE the button so they clearly describe
                 # the close (not the Remove button that follows below).
-                st.caption("🔴 LIVE close — sends a real buy-to-close order."
-                           if close_live else
-                           "📝 Records the close in the tracker; no live order.")
+                if _live_in_paper:
+                    st.warning(
+                        "⚠️ This is a **real (live)** position, but the app is "
+                        "in **paper mode** (`paper = true`). Paper mode can't "
+                        "send — or simulate — a closing order for a live "
+                        "position (that would desync the tracker from your open "
+                        "broker position). Set `paper = false` in config.toml "
+                        "and restart to manage it.")
+                else:
+                    st.caption("🔴 LIVE close — sends a real buy-to-close order."
+                               if close_live else
+                               "📝 Records the close in the tracker; no live "
+                               "order.")
                 if close_live and market_open is False:
                     st.caption("⏸ Market closed")
 
@@ -662,7 +732,7 @@ def tab_trades() -> None:
                         label_visibility="collapsed",
                     )
                 with _bc:
-                    if trade_live and config_paper:
+                    if _live_in_paper:
                         _blocked = ("Live position — set paper=false in "
                                     "config.toml to send a closing order.")
                     elif close_live and market_open is not True:
@@ -672,10 +742,10 @@ def tab_trades() -> None:
                     else:
                         _blocked = None
                     if _blocked:
-                        st.button("Confirm Closing Trade", disabled=True,
+                        st.button(f"Confirm Closing Trade · {_close_badge}", disabled=True,
                                   key=f"close_btn_{t['id']}", help=_blocked,
                                   width="stretch", type="primary")
-                    elif st.button("Confirm Closing Trade",
+                    elif st.button(f"Confirm Closing Trade · {_close_badge}",
                                    key=f"close_btn_{t['id']}", width="stretch",
                                    type="primary"):
                         st.session_state[_confirm_key] = True
@@ -716,7 +786,7 @@ def tab_trades() -> None:
 
                     bc1, bc2, _ = st.columns([1, 1, 3])
                     with bc1:
-                        _do = st.button("Place Closing Trade",
+                        _do = st.button(f"Place Closing Trade · {_close_badge}",
                                         key=f"close_do_{t['id']}",
                                         type="primary", width="stretch")
                     with bc2:

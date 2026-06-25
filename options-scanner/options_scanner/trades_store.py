@@ -18,8 +18,9 @@ Each record:
   close_limit_px  per-share limit on that closing order
   close_cost  per-share cost paid to close (None while open)
   closed_at   ISO-8601 (None while open)
-  fill_spot   underlying spot captured when the order was first seen filled
+  fill_spot   underlying spot captured at fill (paper: at placement)
   fill_delta  option delta captured at that same moment
+  fill_iv     option implied vol captured at that same moment
 """
 
 from __future__ import annotations
