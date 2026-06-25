@@ -16,6 +16,7 @@ Each record:
   opened_at   ISO-8601 timestamp
   close_order_id  Schwab id of the buy-to-close order (set while "closing")
   close_limit_px  per-share limit on that closing order
+  close_qty   contracts the working closing order is buying back (≤ quantity)
   close_cost  per-share cost paid to close (None while open)
   closed_at   ISO-8601 (None while open)
   fill_spot   underlying spot captured at fill (paper: at placement)

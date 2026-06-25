@@ -130,14 +130,49 @@ def _cancel_order(scfg: dict, trade: dict) -> dict:
     return {"ok": True, "msg": "✅ Cancel sent. Verify at your broker."}
 
 
-def _submit_close(scfg: dict, trade: dict, limit: float, live: bool) -> dict:
+def _book_close(trade: dict, closed_n: int, close_cost, closed_at: str) -> None:
+    """Record ``closed_n`` contracts of ``trade`` as closed at ``close_cost``.
+
+    Full close (closed_n ≥ quantity): the trade itself is marked closed.
+    Partial close: the closed contracts become a *new* "closed" record (so they
+    carry their own realized P/L) and the original trade's quantity is reduced
+    to the open remainder, reverting it to "open" so it stays tracked and can be
+    closed again. Closing-order fields are cleared either way.
+    """
+    total = int(trade.get("quantity", 1))
+    closed_n = max(1, min(int(closed_n), total))
+    if closed_n >= total:
+        trades_store.update(trade["id"], status="closed",
+                            close_cost=close_cost, closed_at=closed_at,
+                            close_order_id=None, close_limit_px=None,
+                            close_qty=None)
+        return
+    # Partial: split the closed contracts into their own closed record (keeping
+    # the opening identity/credit/fill snapshot so its realized P/L is right)…
+    _closed = {k: v for k, v in trade.items()
+               if k not in ("id", "status", "close_order_id",
+                            "close_limit_px", "close_qty")}
+    _closed.update({"quantity": closed_n, "status": "closed",
+                    "close_cost": close_cost, "closed_at": closed_at})
+    trades_store.add(_closed)
+    # …and shrink the original to the still-open remainder.
+    trades_store.update(trade["id"], quantity=total - closed_n, status="open",
+                        close_order_id=None, close_limit_px=None,
+                        close_qty=None)
+
+
+def _submit_close(scfg: dict, trade: dict, limit: float, live: bool,
+                  close_qty: int | None = None) -> dict:
     """Close a tracked put. `live` True → send a real BUY_TO_CLOSE order;
-    False → record the close in the tracker only. Updates the store; returns
+    False → record the close in the tracker only. `close_qty` contracts (≤ the
+    position size, default all) are bought back. Updates the store; returns
     {ok, msg}."""
     from stocks_shared.schwab_live import get_client
     qty = int(trade.get("quantity", 1))
-    debit = round(float(limit) * 100 * qty, 2)
+    close_qty = max(1, min(int(close_qty), qty)) if close_qty else qty
+    debit = round(float(limit) * 100 * close_qty, 2)
     now = datetime.now().isoformat(timespec="seconds")
+    _of = f" of {qty}" if close_qty < qty else ""
     if not live:
         # A tracker-only close is valid only for a paper trade. Never "paper
         # close" a real position — that would mark a still-open broker position
@@ -146,11 +181,11 @@ def _submit_close(scfg: dict, trade: dict, limit: float, live: bool) -> dict:
             return {"ok": False,
                     "msg": ("Live position can't be closed in paper mode — set "
                             "paper=false in config.toml and restart.")}
-        trades_store.update(trade["id"], status="closed",
-                            close_cost=round(float(limit), 2), closed_at=now)
+        _book_close(trade, close_qty, round(float(limit), 2), now)
         return {"ok": True,
-                "msg": (f"Close recorded in the tracker (debit ${debit:,.0f}). "
-                        "No live order sent.")}
+                "msg": (f"Close recorded in the tracker ({close_qty}{_of} "
+                        f"contract(s), debit ${debit:,.0f}). No live order "
+                        "sent.")}
     try:
         client = get_client(scfg.get("app_key", ""), scfg.get("app_secret", ""),
                             scfg.get("callback_url", ""),
@@ -167,20 +202,23 @@ def _submit_close(scfg: dict, trade: dict, limit: float, live: bool) -> dict:
         client, ticker=trade.get("ticker"),
         strike=float(trade.get("strike", 0)),
         expiration=trade.get("expiration", ""), limit=float(limit),
-        quantity=qty, account_hash=account_hash)
+        quantity=close_qty, account_hash=account_hash)
     if not res["ok"]:
         return {"ok": False, "msg": f"Close rejected: {res['error']}"}
     # The buy-to-close is accepted but may sit working before it fills. Track it
     # as "closing" (not yet "closed") so the tab polls its status and offers a
-    # Cancel — the trade is finalized to "closed" only once the close fills.
+    # Cancel — the trade is finalized (and split, if a partial close) only once
+    # the close fills.
     trades_store.update(trade["id"], status="closing",
                         close_order_id=res["order_id"],
-                        close_limit_px=round(float(limit), 2))
+                        close_limit_px=round(float(limit), 2),
+                        close_qty=close_qty)
     _oid = f" (id {res['order_id']})" if res["order_id"] else ""
     return {"ok": True,
-            "msg": (f"✅ LIVE closing order sent to {mask}{_oid}. It will show "
-                    "as **closing** here until it fills — cancel it from this "
-                    "tab if needed. Verify at your broker.")}
+            "msg": (f"✅ LIVE closing order sent to {mask}{_oid} ({close_qty}"
+                    f"{_of} contract(s)). It will show as **closing** here "
+                    "until it fills — cancel it from this tab if needed. Verify "
+                    "at your broker.")}
 
 
 def _cancel_close_order(scfg: dict, trade: dict) -> dict:
@@ -550,19 +588,20 @@ def tab_trades() -> None:
                 cbs = close_status_by_id.get(t.get("id"))
                 _lim = t.get("close_limit_px")
                 _lim_txt = f" @ ${_lim:.2f}" if _lim else ""
+                _cqty = int(t.get("close_qty") or qty)
+                _qty_txt = f" ({_cqty} of {qty})" if _cqty < qty else ""
                 if cbs and cbs.get("status") == "FILLED":
-                    # Persist the close, then rerun so the row renders cleanly as
-                    # closed (its title/status card were built above as
-                    # "closing"). Prefer the true average execution price; fall
-                    # back to the limit if Schwab hasn't surfaced fill legs.
+                    # Book the close — full → mark closed; partial → split off a
+                    # closed record and keep the remainder open — at the true
+                    # average execution price (falling back to the limit), then
+                    # rerun to render the result cleanly.
                     _cat = cbs.get("filled_at")
                     _fill_px = cbs.get("fill_price")
                     _cost = round(_fill_px, 2) if _fill_px is not None else _lim
-                    trades_store.update(
-                        t["id"], status="closed", close_cost=_cost,
-                        closed_at=(_cat.isoformat() if _cat
-                                   else datetime.now().isoformat(
-                                       timespec="seconds")))
+                    _book_close(t, int(cbs.get("filled") or _cqty), _cost,
+                                (_cat.isoformat() if _cat
+                                 else datetime.now().isoformat(
+                                     timespec="seconds")))
                     st.rerun(scope="fragment")
                 _cstat = cbs.get("status") if cbs else None
                 _close_working = bool(cbs and cbs.get("cancelable"))
@@ -571,22 +610,22 @@ def tab_trades() -> None:
                 # at the broker). The position is still open, so let the user
                 # reopen and try closing again next session.
                 if cbs and not _close_working and _cstat != "FILLED":
-                    _filled_n = float(cbs.get("filled") or 0)
+                    _filled_n = int(float(cbs.get("filled") or 0))
                     if _filled_n > 0:
-                        # Partially filled then terminated — the tracker can't
-                        # represent a partly-closed position; reconcile manually.
-                        st.warning(
-                            f"⚠️ Closing order **{_cstat}** after a partial fill "
-                            f"({int(_filled_n)} of {qty}) — reconcile this "
-                            "position at your broker, then update the tracker.")
-                        _pc1, _ = st.columns([2, 5])
-                        with _pc1:
-                            _rmbox = st.container(key=f"rm_box_{t['id']}")
-                            _rmbox.button("Remove from Tracker",
-                                          key=f"rm_{t['id']}",
-                                          on_click=trades_store.remove,
-                                          args=(t["id"],), width="stretch")
-                        continue
+                        # Partially filled, then the order terminated: book the
+                        # filled contracts as closed and keep the rest open and
+                        # monitored (a split, same as a deliberate partial close).
+                        _fill_px = cbs.get("fill_price")
+                        _cost = (round(_fill_px, 2) if _fill_px is not None
+                                 else _lim)
+                        _cat = cbs.get("filled_at")
+                        _book_close(t, _filled_n, _cost,
+                                    (_cat.isoformat() if _cat
+                                     else datetime.now().isoformat(
+                                         timespec="seconds")))
+                        st.session_state.pop(f"close_result_{t['id']}", None)
+                        _order_status.clear()
+                        st.rerun(scope="fragment")
                     st.warning(
                         f"⚠️ Closing order **{_cstat}**{_lim_txt} — it did not "
                         "fill, so the position is still open. Reopen to try "
@@ -612,13 +651,13 @@ def tab_trades() -> None:
                     continue
 
                 if _cstat:
-                    st.caption(f"⏳ Closing order **{_cstat}**{_lim_txt} — "
-                               "buy-to-close not yet filled. Cancel below to "
+                    st.caption(f"⏳ Closing order **{_cstat}**{_qty_txt}{_lim_txt}"
+                               " — buy-to-close not yet filled. Cancel below to "
                                "keep the position open, or wait for a fill.")
                 else:
-                    st.caption(f"⏳ Closing order placed{_lim_txt}; broker "
-                               "status unavailable — hit 🔄 to re-check, or "
-                               "Cancel below.")
+                    st.caption(f"⏳ Closing order placed{_qty_txt}{_lim_txt}; "
+                               "broker status unavailable — hit 🔄 to re-check, "
+                               "or Cancel below.")
                 _ccrk = f"close_cancel_result_{t['id']}"
                 _xc1, _xc2, _ = st.columns([2, 2, 3])
                 with _xc1:
@@ -756,11 +795,14 @@ def tab_trades() -> None:
                 if close_live and market_open is False:
                     st.caption("⏸ Market closed")
 
-                _lc, _fc, _bc, _rc, _ = st.columns([1, 1.4, 2, 2, 1],
-                                                   vertical_alignment="center")
-                with _lc:
+                # Inputs row: close limit + how many contracts to buy back —
+                # always shown (locked at 1 for a single-lot) so the count is
+                # never in doubt. Buttons sit on the row below.
+                _il, _if, _ql, _qf, _ = st.columns(
+                    [1, 1.2, 1.3, 0.9, 1.6], vertical_alignment="center")
+                with _il:
                     st.markdown("Close limit")
-                with _fc:
+                with _if:
                     _clbox = st.container(key=f"close_box_{t['id']}")
                     close_limit = _clbox.number_input(
                         "Close limit", min_value=0.01,
@@ -768,6 +810,22 @@ def tab_trades() -> None:
                         format="%.2f", key=_wid_key,
                         label_visibility="collapsed",
                     )
+                # Seed via session_state (and re-clamp if a prior partial close
+                # shrank the position below the remembered count) so the keyed
+                # widget doesn't error on a stale over-max value.
+                _qk = f"close_qty_{t['id']}"
+                if st.session_state.get(_qk) is None or \
+                        st.session_state[_qk] > qty:
+                    st.session_state[_qk] = qty
+                with _ql:
+                    st.markdown(f"Contracts (of {qty})")
+                with _qf:
+                    close_n = int(st.number_input(
+                        "Contracts", min_value=1, max_value=qty, step=1,
+                        format="%d", key=_qk, label_visibility="collapsed",
+                        disabled=(qty == 1)))
+
+                _bc, _rc, _ = st.columns([2, 2, 1], vertical_alignment="center")
                 with _bc:
                     if _live_in_paper:
                         _blocked = ("Live position — set paper=false in "
@@ -794,9 +852,10 @@ def tab_trades() -> None:
                                   args=(t["id"],), width="stretch")
 
                 if st.session_state.get(_confirm_key):
-                    _debit = close_limit * 100 * qty
+                    _debit = close_limit * 100 * close_n
+                    _of2 = f" of {qty}" if close_n < qty else ""
                     st.warning(
-                        f"**Confirm close** — BUY TO CLOSE {qty} "
+                        f"**Confirm close** — BUY TO CLOSE {close_n}{_of2} "
                         f"{t.get('ticker')} ${t.get('strike')} PUT @ "
                         f"${close_limit:.2f} (debit **${_debit:,.0f}**) · "
                         + ("🔴 **LIVE**" if close_live else "📝 **PAPER**"))
@@ -831,7 +890,8 @@ def tab_trades() -> None:
                         _cbox.button("Cancel", key=f"close_cancel_{t['id']}",
                                      width="stretch", on_click=_cancel_close)
                     if _do:
-                        _result = _submit_close(scfg, t, close_limit, close_live)
+                        _result = _submit_close(scfg, t, close_limit, close_live,
+                                                close_n)
                         st.session_state[_result_key] = _result
                         st.session_state[_confirm_key] = False
                         # A live close moves the trade to "closing" — rerun so it
