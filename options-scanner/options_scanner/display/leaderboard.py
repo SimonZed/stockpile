@@ -324,7 +324,8 @@ def _investigate_put_body(c: dict, ticker_df: "pd.DataFrame | None" = None,
         with lim_col:
             limit = st.number_input(
                 "Limit price",
-                min_value=0.01, value=float(default_limit),
+                min_value=float(trade_actions.tick_for(default_limit)),
+                value=float(default_limit),
                 step=float(trade_actions.tick_for(default_limit)), format="%.2f",
                 key=f"investigate_limit_{c['ticker']}_{c['strike']:g}_{c['expiration']}",
             )

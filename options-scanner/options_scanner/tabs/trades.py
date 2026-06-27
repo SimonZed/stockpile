@@ -800,7 +800,8 @@ def tab_trades() -> None:
                 with _if:
                     _clbox = st.container(key=f"close_box_{t['id']}")
                     close_limit = _clbox.number_input(
-                        "Close limit", min_value=0.01,
+                        "Close limit",
+                        min_value=float(trade_actions.tick_for(default_close)),
                         step=float(trade_actions.tick_for(default_close)),
                         format="%.2f", key=_wid_key,
                         label_visibility="collapsed",
