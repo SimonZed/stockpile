@@ -271,23 +271,43 @@ def panel_merge(accounts):
 
     st.divider()
 
-    # Only routable files can be previewed — there is nothing to show for a
-    # file with no account to merge into. Clearing one out is a row action
-    # above, so nothing is unreachable.
-    labels = {f"{p.name}  →  {acct.name}": (p, b, acct)
-              for p, b, acct, _ in routed if acct is not None}
-    if not labels:
+    # Only routable files that still have something to write are offered —
+    # a file with no account has nothing to preview, and an already-merged
+    # one would only preview "nothing new". Both are cleared with the row
+    # actions above, so nothing is unreachable.
+    routable = [(p, b, acct) for p, b, acct, _ in routed if acct is not None]
+    if not routable:
         st.warning("None of these could be routed to a configured account.")
         return
+    labels = {}
+    for p, b, acct in routable:
+        status = _merge_status(p, acct)
+        if status != "already merged":
+            labels[f"{p.name}  →  {acct.name}   ({status})"] = (p, b, acct)
+    if not labels:
+        st.success(
+            "Every export listed above is already merged. Use 📦 or 🗑 on "
+            "its row to clear it from the list."
+        )
+        return
 
-    # The picker's remembered choice can name a file that was just archived
-    # or deleted; drop it before the widget sees an option that is gone.
+    # The picker's remembered choice can name a file that was just archived,
+    # deleted or merged; drop it before the widget sees an option that is gone.
     if st.session_state.get("merge_pick") not in labels:
         st.session_state.pop("merge_pick", None)
 
-    chosen = st.selectbox("Preview a merge", list(labels), key="merge_pick")
+    st.markdown("#### Step 1 — choose the export to merge")
+    chosen = st.selectbox(
+        "Export to merge", list(labels), key="merge_pick", index=None,
+        placeholder="Select an export…", label_visibility="collapsed",
+    )
     if not chosen:
+        st.info(
+            "👆 Pick an export above to preview its merge. The **Merge** "
+            "button appears once one is selected."
+        )
         return
+    st.markdown("#### Step 2 — review, then merge")
     path, brokerage, acct = labels[chosen]
     target = Path(acct.csv)
 

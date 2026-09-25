@@ -303,6 +303,49 @@ class TestVerification:
         new = write(tmp_path, "new.csv", FID_INCOMING)
         merge_csv(old, new, "fidelity", verify=False)  # no raise
 
+    def test_dividend_for_untraded_ticker_is_not_a_false_duplicate(
+            self, tmp_path):
+        """A monthly export's dividend row, for a ticker it never trades.
+
+        Every parser decides a row's ticker in two passes: pass 1 finds
+        the symbols that *trade*, pass 2 attaches dividends only to those.
+        So a one-month export carrying a GOOGL dividend but no GOOGL trade
+        yields no GOOGL transactions at all when parsed on its own — the
+        dividend lands in ``other_rows`` and counts zero.
+
+        Verification used to compare that isolated 0 against the merged
+        file's 1 (where the 2022 buy makes GOOGL a position) and refuse
+        the merge as having invented a transaction. Dividends for tickers
+        not traded that month are routine, so this blocked ordinary
+        merges. The counts are now taken in the merged file's context.
+        """
+        new = write(tmp_path, "new.csv", (
+            SCHWAB_HDR + "\r\n"
+            '"08/28/2026","Qualified Dividend","GOOGL",'
+            '"ALPHABET INC CLASS A","","","","$96.00"\r\n'
+        ))
+        old = write(tmp_path, "old.csv", SCHWAB_EXISTING)
+
+        r = merge_csv(old, new, "schwab")          # must not raise
+        assert len(r.added) == 1
+        assert r.txn_after == r.txn_before + 1
+
+    def test_untraded_ticker_dividend_still_dedupes(self, tmp_path):
+        """The same row already present — added once, not twice.
+
+        The context fix must not buy its way out of the false positive by
+        going blind to real duplication in the same shape.
+        """
+        div = ('"08/28/2026","Qualified Dividend","GOOGL",'
+               '"ALPHABET INC CLASS A","","","","$96.00"\r\n')
+        old = write(tmp_path, "old.csv", SCHWAB_EXISTING + div)
+        new = write(tmp_path, "new.csv", SCHWAB_HDR + "\r\n" + div)
+
+        r = merge_csv(old, new, "schwab")
+        assert r.added == []
+        assert len(r.unchanged) == 1
+        assert r.txn_after == r.txn_before
+
 
 class TestGuards:
     def test_header_mismatch_rejected(self, tmp_path):

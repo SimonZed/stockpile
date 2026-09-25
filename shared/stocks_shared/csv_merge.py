@@ -290,7 +290,7 @@ class MergeResult:
         )
 
 
-def render(pf: ParsedFile, rows: list[list[str]]) -> str:
+def _render_rows(pf: ParsedFile, rows: list[list[str]]) -> str:
     """Serialize a header + rows back to CSV in the source file's dialect."""
     buf = io.StringIO()
     writer = csv.writer(
@@ -304,6 +304,16 @@ def render(pf: ParsedFile, rows: list[list[str]]) -> str:
     if pf.preamble:
         body = pf.line_terminator.join(pf.preamble) + pf.line_terminator + body
     return ("﻿" if pf.has_bom else "") + body
+
+
+def render(pf: ParsedFile, rows: list[list[str]]) -> str:
+    """Serialize the merge's own output. See :func:`_render_rows`.
+
+    Verification deliberately does *not* route its scratch files through
+    this name: it must serialize context files with known-good code even
+    when a test has replaced this function with a corrupting one.
+    """
+    return _render_rows(pf, rows)
 
 
 def _txn_counts(path: str | Path, brokerage: str) -> Counter:
@@ -378,41 +388,83 @@ def merge_csv(existing_path: str | Path, incoming_path: str | Path,
     result.text = render(existing, merged)
 
     if verify:
-        _verify(result, existing_path, incoming_path, brokerage)
+        _verify(result, existing, incoming, merged, brokerage)
     return result
 
 
-def _verify(result: MergeResult, existing_path, incoming_path,
-            brokerage: str) -> None:
+def _txn_counts_text(text: str, brokerage: str) -> Counter:
+    """:func:`_txn_counts` over CSV text, via a scratch file.
+
+    The parsers read paths, not strings, so anything assembled in memory
+    has to touch disk to be counted.
+    """
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".csv", delete=False, encoding="utf-8", newline=""
+    ) as fh:
+        fh.write(text)
+        tmp = fh.name
+    try:
+        return _txn_counts(tmp, brokerage)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def _verify(result: MergeResult, existing: ParsedFile, incoming: ParsedFile,
+            merged: list[list[str]], brokerage: str) -> None:
     """Check the merged output through the brokerage's real parser.
 
-    Both inputs are full-history exports of the same account, so merging
-    them should yield, for each distinct transaction, ``max`` of the two
-    counts — enough copies to satisfy whichever input saw more, and no
-    more. Counting rather than set-comparing is what catches a transaction
-    written twice, which is the costly failure here: the sheet would book
-    the trade's P&L twice and nothing downstream would flag it.
+    Both inputs describe the same account, so merging them should yield,
+    for each distinct transaction, ``max`` of the two counts — enough
+    copies to satisfy whichever input saw more, and no more. Counting
+    rather than set-comparing is what catches a transaction written twice,
+    which is the costly failure here: the sheet would book the trade's P&L
+    twice and nothing downstream would flag it.
 
     This is also what makes byte-level dialect fidelity unnecessary. What
     matters is that the tracker reads the same trades back out, so the
     writer is free to normalize Merrill's space padding away.
+
+    **Why the counts are taken in context.** Every parser decides a row's
+    ticker in two passes: pass 1 collects the symbols that trade (buys,
+    sells, option opens and closes), and pass 2 attaches the non-trade
+    rows — dividends, interest, share transfers — only to symbols pass 1
+    already found. A row whose symbol never trades in *that file* is not a
+    position's transaction at all; it lands in the parser's ``other_rows``
+    and counts zero.
+
+    That makes an isolated parse of a partial export the wrong yardstick.
+    A one-month Schwab export holding a SCHW dividend but no SCHW trade
+    counts the dividend zero; the merged file, carrying years of SCHW
+    buys, counts it once — and the old check read that legitimate 0 -> 1
+    as a transaction the merge had invented, refusing an export that was
+    perfectly good. Dividends for a ticker not traded that month are
+    routine, so this fired on ordinary merges.
+
+    So each input's rows are re-counted *alongside the merged rows* and
+    the merged file's own counts subtracted, leaving what those rows
+    contribute under the same ticker context the output is judged in.
+    Duplication is still caught: a transaction the merge wrote twice
+    exceeds what either input contributes, whatever the context.
     """
-    before = _txn_counts(existing_path, brokerage)
-    incoming_txns = _txn_counts(incoming_path, brokerage)
+    # Context files are serialized with _render_rows, not render: a test
+    # that corrupts render to prove this check works must not also corrupt
+    # the baseline the check measures against.
+    merged_counts = _txn_counts_text(_render_rows(existing, merged), brokerage)
+
+    def contributed(rows: list[list[str]]) -> Counter:
+        """What `rows` add to the merged file's transactions."""
+        both = _txn_counts_text(
+            _render_rows(existing, list(rows) + list(merged)), brokerage)
+        return both - merged_counts   # keeps positives only
+
+    before = contributed(existing.rows)
+    incoming_txns = contributed(incoming.rows)
     expected = Counter({
         txn: max(before[txn], incoming_txns[txn])
         for txn in set(before) | set(incoming_txns)
     })
 
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".csv", delete=False, encoding="utf-8", newline=""
-    ) as fh:
-        fh.write(result.text)
-        tmp = fh.name
-    try:
-        after = _txn_counts(tmp, brokerage)
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    after = _txn_counts_text(result.text, brokerage)
 
     lost = expected - after          # Counter subtraction keeps positives only
     extra = after - expected
@@ -431,7 +483,9 @@ def _verify(result: MergeResult, existing_path, incoming_path,
             + "\n".join(detail)
         )
 
-    result.txn_before = sum(before.values())
+    # Reported to the user, so this one is the plain standalone count: what
+    # the tracker reads from the file today, before anything is written.
+    result.txn_before = sum(_txn_counts(existing.path, brokerage).values())
     result.txn_after = sum(after.values())
 
 
