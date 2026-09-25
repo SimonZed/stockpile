@@ -177,18 +177,6 @@ def fmt_strike(strike) -> str:
     return f"${x:,.2f}".rstrip("0").rstrip(".")
 
 
-def dte_cell(dte, days_open=None) -> str:
-    """A live position's DTE cell: days to expiration, then days-since-open in
-    parens. ``dte_cell(18, 44) → "18 (44)"``, ``dte_cell(18) → "18"``.
-
-    The second figure comes from the app's trade log — the broker doesn't report
-    when a leg was opened — so a position opened outside the scanner drops the
-    parens entirely rather than showing them empty.
-    """
-    cell = f"{dte}" if dte is not None else "—"
-    return f"{cell} ({days_open})" if days_open is not None else cell
-
-
 def open_prices_cell(stock, option) -> str:
     """The Open cell: what the UNDERLYING cost when the position was opened,
     then what the option itself opened at. ``"$27.40 · $1.10"``.

@@ -31,7 +31,7 @@ from options_scanner import (
 )
 from options_scanner.display.leaderboard import fingerprint_ids
 from options_scanner.format import (
-    days_since, dte_cell, kv_table_html, leg_rows, money_md,
+    days_since, kv_table_html, leg_rows, money_md,
     open_prices_cell,
 )
 from options_scanner.ui_theme import (
@@ -1786,13 +1786,20 @@ def _render_option_positions(scfg: dict, provider: str, market_open,
             "Spot/Day%": _spotday,
             "_pct": _pct,
             "_opt": _opt,   # hidden — splits the rows into the two tables
-            # Just the direction: puts and calls have their own tables, so the
-            # right is in the table heading rather than repeated on every row.
-            "Type": "Short" if _dir == "short" else "Long",
             "Strike": _strike,
             "Exp": p.get("expiration", ""),
-            "DTE": dte_cell(_dte_v, _days_open),
-            "Qty": _qty,
+            # Two numbers, two columns — they used to share one cell as
+            # "85 (12)", and a text cell sorts like text: 85 landed between 8
+            # and 9. Anything a reader would sort numerically has to BE a
+            # number here, because a column can only sort by its own values.
+            "DTE": _dte_v,
+            "Held": _days_open,
+            # Signed, which is where the direction lives — a column of its own
+            # spent 85px repeating what one minus sign says. Same convention as
+            # Mkt Val and P/L beside it (and as your brokerage statement): you
+            # owe a short, so it's negative. Only the DISPLAY is signed; `_qty`
+            # stays a magnitude, because every figure below multiplies by it.
+            "Qty": -_qty if _dir == "short" else _qty,
             "Delta": (round(_delta, 2) if _delta is not None else None),
             "Ann%": (round(_ann, 1) if _ann is not None else None),
             # What the leg's value is made of, split whole-leg the same way Mkt
@@ -1808,6 +1815,15 @@ def _render_option_positions(scfg: dict, provider: str, market_open,
             "Note": " · ".join(_tags),
         })
     disp = pd.DataFrame(rows)
+    # Keep the numeric columns numeric even when they're entirely empty. Every
+    # one of these is None-able — no quote came back, no leg was opened through
+    # the scanner — and pandas types an ALL-None column as `object`, which the
+    # grid then sorts as text. That's the same failure the DTE cell had: "85"
+    # landing between "8" and "9". A column with even one number in it already
+    # coerces to float64; this covers the all-empty case, which for `Held` is
+    # the normal one.
+    for _numcol in ("ITM%", "DTE", "Held", "Delta", "Ann%", "Mkt Val", "P/L"):
+        disp[_numcol] = pd.to_numeric(disp[_numcol], errors="coerce")
     # What you have to close with. Buying back a short is a debit, so this is
     # the number that decides whether a close is affordable — shared 60s cache
     # with the Sell dialog, so it costs no extra round-trip.
@@ -1828,10 +1844,17 @@ def _render_option_positions(scfg: dict, provider: str, market_open,
                 help="Underlying spot and today's change (green up / red down)."),
             "_pct": None,
             "_opt": None,
-            "Type": st.column_config.TextColumn(
-                "Direction", width=85,
-                help="Short = you sold it (closing buys it back). Long = you "
-                     "bought it (closing sells it)."),
+            # The sign carries the direction (the Direction column it replaced
+            # said the same thing in a column of its own). Always signed, longs
+            # included: a bare "10" beside a "-10" would read as a missing minus
+            # rather than a deliberate long.
+            "Qty": st.column_config.NumberColumn(
+                "Qty", format="%+d", width=70,
+                help="Contracts held, signed the way your brokerage statement "
+                     "signs them: negative = short (you sold it; closing buys "
+                     "it back), positive = long (you bought it; closing sells "
+                     "it). Mkt Val and P/L beside it follow the same "
+                     "convention."),
             "Strike": st.column_config.NumberColumn("Strike", format="$%.2f"),
             "Delta": st.column_config.NumberColumn("Delta", format="%.2f"),
             "Ann%": st.column_config.NumberColumn(
@@ -1869,16 +1892,16 @@ def _render_option_positions(scfg: dict, provider: str, market_open,
                      "open price. Short: premium collected − cost to buy back. "
                      "Long: value now − what you paid. Positive is in your "
                      "favor either way."),
-            # Text, not a number: it carries the days-open parenthetical. The
-            # label spells that out so the second figure doesn't read as a
-            # second DTE.
-            "DTE": st.column_config.TextColumn(
-                "DTE (days open)", width=140,
-                help="Days to expiration, and — in parentheses — how many days "
-                     "ago the position was opened. The open date comes from the "
-                     "app's trade log, so the parens appear only for legs "
-                     "opened through the scanner; anything opened elsewhere "
-                     "shows the DTE alone."),
+            "DTE": st.column_config.NumberColumn(
+                "DTE", format="%d", width=70,
+                help="Days to expiration. Blank when the record's expiration "
+                     "date can't be read."),
+            "Held": st.column_config.NumberColumn(
+                "Held", format="%d", width=70,
+                help="Days since the position was opened. The open date comes "
+                     "from the app's trade log — the broker doesn't report it "
+                     "— so this is blank for legs opened outside the scanner. "
+                     "Sort by it to find what you've been sitting on longest."),
     }
 
     # Puts and calls in their own tables, puts first — they're different trades

@@ -136,3 +136,82 @@ def test_a_leg_with_a_working_close_is_still_the_open_record(monkeypatch):
 def test_the_module_no_longer_carries_the_old_roll_table():
     # The merge deleted it; this fails loudly if it comes back by accident.
     assert not hasattr(trades, "_positions_table")
+
+
+# ── Qty carries the direction ───────────────────────────────────────────────
+# The Direction column (Short/Long) was folded into Qty as a sign, matching the
+# Mkt Val and P/L columns beside it — and your brokerage statement.
+
+def _rowsrc():
+    import inspect
+    return inspect.getsource(trades._render_option_positions)
+
+
+def test_the_direction_column_is_gone():
+    src = _rowsrc()
+    assert '"Direction"' not in src
+    assert '"Type": "Short"' not in src
+
+
+def test_qty_is_signed_for_display():
+    src = _rowsrc()
+    assert '"Qty": -_qty if _dir == "short" else _qty' in src
+    assert 'format="%+d"' in src, "longs show +N too, or a bare N reads as a " \
+                                  "dropped minus sign"
+
+
+# ── numeric columns sort numerically ────────────────────────────────────────
+# The report: sorting the calls by DTE put UBER's 85 in the wrong place. DTE
+# was a TextColumn carrying "85 (12)", and the grid sorts a text column as
+# text — "85" falls between "8" and "9". A column can only sort by its own
+# values, so anything a reader would sort numerically has to BE a number.
+
+NUMERIC_COLUMNS = ("ITM%", "DTE", "Held", "Delta", "Ann%", "Mkt Val", "P/L")
+
+
+def test_the_dte_cell_is_two_numeric_columns():
+    src = _rowsrc()
+    assert '"DTE": _dte_v' in src and '"Held": _days_open' in src
+    assert "dte_cell(" not in src, "that helper packed both into one string"
+
+
+def test_no_numeric_column_is_configured_as_text():
+    src = _rowsrc()
+    for col in NUMERIC_COLUMNS:
+        assert f'"{col}": st.column_config.TextColumn' not in src, \
+            f"{col} would sort as text"
+
+
+def test_every_numeric_column_is_coerced():
+    # An all-None column types as `object`, and an object column sorts as text
+    # — so the fix isn't complete until the empty case is covered too. `Held`
+    # is all-None for anyone whose legs were opened outside the scanner, which
+    # is most of them.
+    src = _rowsrc()
+    for col in NUMERIC_COLUMNS:
+        assert f'"{col}"' in src
+    assert "pd.to_numeric(" in src
+
+
+def test_an_all_empty_numeric_column_stays_numeric():
+    # The behavior behind that coercion, in pandas terms.
+    import pandas as pd
+    frame = pd.DataFrame([{"Held": None}, {"Held": None}])
+    assert frame["Held"].dtype == object, "the trap this guards against"
+    frame["Held"] = pd.to_numeric(frame["Held"], errors="coerce")
+    assert frame["Held"].dtype.kind == "f"
+
+
+def test_a_text_sort_would_misplace_the_reported_case():
+    # Why this matters, stated as the bug: as text, 85 sorts between 8 and 9.
+    as_text = sorted(["8", "85", "9"])
+    assert as_text == ["8", "85", "9"]
+    assert sorted([8, 85, 9]) == [8, 9, 85]
+
+
+def test_only_the_displayed_qty_is_signed():
+    # `_qty` multiplies every money figure in the row (Intrinsic | Time, Mkt
+    # Val, P/L). Sign it at the source and a short leg's whole line flips.
+    src = _rowsrc()
+    assert "_qty = int(p.get(\"quantity\", 1))" in src
+    assert "_qty = -" not in src
